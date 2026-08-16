@@ -27,8 +27,8 @@ jobs:
           node-version: 20
 
       - name: Install dependencies
-        # --omit=optional：不安装 ffmpeg-static（体积大，运行时由用户本机 ffmpeg 提供）
-        run: npm ci --no-audit --no-fund --omit=optional
+        # 保留 optionalDependencies：dmg-license 是 macOS 打包 dmg 所需（ffmpeg-static 不会进包，files 白名单已限定）
+        run: npm ci --no-audit --no-fund
 
       - name: Run tests
         run: npm test
