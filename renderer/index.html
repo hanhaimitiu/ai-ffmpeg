@@ -105,7 +105,10 @@
 
       <div class="panel-head tasks-head">
         <h2>任务队列</h2>
-        <span class="queue-info" id="queue-info"></span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="queue-info" id="queue-info"></span>
+          <button class="btn small ghost" id="btn-clear-history" title="清空已完成/失败的任务记录">清空</button>
+        </div>
       </div>
       <div class="task-list" id="task-list">
         <div class="empty-hint">暂无任务</div>

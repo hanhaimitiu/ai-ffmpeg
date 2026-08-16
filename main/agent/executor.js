@@ -23,6 +23,19 @@ function baseName(p) {
   return base.replace(/[\\/:*?"<>|]/g, '_');
 }
 
+/** 路径不存在则原样返回；存在则追加 -2/-3… 直到不冲突（避免 ffmpeg -y 静默覆盖已有文件） */
+function uniquePath(p) {
+  if (!fs.existsSync(p)) return p;
+  const dir = path.dirname(p);
+  const base = baseName(p);
+  const ext = path.extname(p);
+  for (let i = 2; i < 1000; i++) {
+    const cand = path.join(dir, `${base}-${i}${ext}`);
+    if (!fs.existsSync(cand)) return cand;
+  }
+  return path.join(dir, `${base}-${Date.now()}${ext}`);
+}
+
 /** 为操作组合建议输出路径（避免覆盖输入） */
 function suggestOutputPath(inputPath, actions) {
   const dir = path.dirname(inputPath);
@@ -31,19 +44,19 @@ function suggestOutputPath(inputPath, actions) {
   const hasThumbnail = actions.some((a) => a.op === 'thumbnail');
   if (hasThumbnail) {
     const at = actions.find((a) => a.op === 'thumbnail').at;
-    return path.join(dir, `${base}${at != null ? `_frame${at}s` : '_cover'}.png`);
+    return uniquePath(path.join(dir, `${base}${at != null ? `_frame${at}s` : '_cover'}.png`));
   }
 
   const hasGif = actions.some((a) => a.op === 'gif');
-  if (hasGif) return path.join(dir, `${base}.gif`);
+  if (hasGif) return uniquePath(path.join(dir, `${base}.gif`));
 
   const audio = actions.find((a) => a.op === 'extractAudio');
-  if (audio) return path.join(dir, `${base}.${audio.targetFormat}`);
+  if (audio) return uniquePath(path.join(dir, `${base}.${audio.targetFormat}`));
 
   const conv = actions.find((a) => a.op === 'convert');
-  if (conv) return path.join(dir, `${base}.${conv.targetFormat}`);
+  if (conv) return uniquePath(path.join(dir, `${base}.${conv.targetFormat}`));
 
-  return path.join(dir, `${base}_out.${extOf(inputPath) || 'mp4'}`);
+  return uniquePath(path.join(dir, `${base}_out.${extOf(inputPath) || 'mp4'}`));
 }
 
 // ---------- 滤镜辅助 ----------

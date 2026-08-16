@@ -91,6 +91,14 @@ class TaskManager {
     return false;
   }
 
+  /** 清空历史记录（不影响正在执行/排队的任务） */
+  clearHistory() {
+    const n = this.history.length;
+    this.history = [];
+    this._emit();
+    return n;
+  }
+
   getState() {
     return {
       running: this.running ? serializeTask(this.running) : null,

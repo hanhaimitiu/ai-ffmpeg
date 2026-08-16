@@ -51,7 +51,8 @@ function toast(msg, kind = 'info') {
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
-  return d.innerHTML;
+  // innerHTML 不转义引号，属性值（data-path 等）需自行补齐，防止路径含引号时逃逸
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ---------- 文件列表 ----------
@@ -558,6 +559,10 @@ function bindEvents() {
     const btn = e.target.closest('[data-cancel]');
     if (btn) { await window.api.cancelTask(btn.dataset.cancel); }
   });
+  $('btn-clear-history').onclick = async () => {
+    const r = await window.api.clearTaskHistory();
+    if (r.cleared) toast(`已清空 ${r.cleared} 条任务记录`);
+  };
 
   $('btn-settings').onclick = openSettings;
   $('btn-settings-close').onclick = () => $('settings-modal').classList.add('hidden');
@@ -626,10 +631,23 @@ function bindEvents() {
 
   // 会话
   $('session-select').addEventListener('change', (e) => {
+    if (state.agentRunning) {
+      toast('正在处理中，请稍候', 'err');
+      renderSessionSelect(); // 还原选中项
+      return;
+    }
     if (e.target.value && e.target.value !== state.sessionId) openSession(e.target.value);
   });
   $('btn-new-session').onclick = newSession;
   $('btn-del-session').onclick = deleteCurrentSession;
+
+  // 弹窗：Esc 关闭 / 点击遮罩关闭
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') $('settings-modal').classList.add('hidden');
+  });
+  $('settings-modal').addEventListener('click', (e) => {
+    if (e.target === $('settings-modal')) $('settings-modal').classList.add('hidden');
+  });
 
   // 拖拽文件
   document.addEventListener('dragover', (e) => e.preventDefault());

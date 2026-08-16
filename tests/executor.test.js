@@ -92,5 +92,25 @@ check('输出路径-音频', out.endsWith('video.wav'), out);
 out = suggestOutputPath('C:/v/video.mp4', [{ op: 'compress' }]);
 check('输出路径-压缩', out.endsWith('video_out.mp4'), out);
 
+// 输出路径防覆盖：已有同名文件时自动 -2 递增
+{
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'outpath-'));
+  const input = path.join(tmp, 'v.mp4');
+  fs.writeFileSync(input, 'x');
+  // 已存在 v_out.mp4 与 v_out-2.mp4
+  fs.writeFileSync(path.join(tmp, 'v_out.mp4'), 'x');
+  fs.writeFileSync(path.join(tmp, 'v_out-2.mp4'), 'x');
+  const o1 = suggestOutputPath(input, [{ op: 'compress' }]);
+  check('防覆盖：跳到 -3', path.basename(o1) === 'v_out-3.mp4', o1);
+  // 转换目标重名
+  fs.writeFileSync(path.join(tmp, 'v.avi'), 'x');
+  const o2 = suggestOutputPath(input, [{ op: 'convert', targetFormat: 'avi' }]);
+  check('防覆盖：转换递增', path.basename(o2) === 'v-2.avi', o2);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 console.log(`\nexecutor 测试结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

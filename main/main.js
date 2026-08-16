@@ -269,6 +269,7 @@ function registerIpc() {
 
   ipcMain.handle('task:cancel', (_e, id) => taskManager.cancel(id));
   ipcMain.handle('task:list', () => taskManager.getState());
+  ipcMain.handle('task:clear-history', () => ({ ok: true, cleared: taskManager.clearHistory() }));
 
   ipcMain.handle('settings:get', () => settings);
   ipcMain.handle('settings:set', (_e, patch) => {

@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   runOperation: (filePath, ops) => ipcRenderer.invoke('task:run-operation', filePath, ops),
   cancelTask: (id) => ipcRenderer.invoke('task:cancel', id),
   listTasks: () => ipcRenderer.invoke('task:list'),
+  clearTaskHistory: () => ipcRenderer.invoke('task:clear-history'),
   onTaskUpdate: (cb) => {
     const handler = (_e, state) => cb(state);
     ipcRenderer.on('task:update', handler);
