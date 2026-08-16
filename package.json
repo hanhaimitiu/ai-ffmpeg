@@ -1,0 +1,70 @@
+{
+  "name": "ai-ffmpeg",
+  "version": "1.0.0",
+  "description": "Electron 音视频处理工具：调用本机 ffmpeg，支持自然语言 Agent 智能操作",
+  "main": "main/main.js",
+  "author": "hanhaimitiu",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node tests/parser.test.js && node tests/executor.test.js && node tests/llm.test.js",
+    "test:e2e": "node tests/e2e.smoke.js",
+    "test:real": "node tests/llm.real.js",
+    "build": "electron-builder",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
+  "build": {
+    "appId": "com.hanhaimitiu.ai-ffmpeg",
+    "productName": "AI FFmpeg",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "icon": "build/icon.png",
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI FFmpeg"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.video"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "synopsis": "AI FFmpeg 音视频工作台"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "hanhaimitiu",
+        "repo": "ai-ffmpeg"
+      }
+    ]
+  }
+}

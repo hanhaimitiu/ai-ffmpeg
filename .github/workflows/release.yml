@@ -1,0 +1,45 @@
+name: Build & Release
+
+# 推送 v* 格式的 tag 时自动构建并发布到 GitHub Releases
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 也支持手动触发（便于调试）
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        # --omit=optional：不安装 ffmpeg-static（体积大，运行时由用户本机 ffmpeg 提供）
+        run: npm ci --no-audit --no-fund --omit=optional
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build & Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --publish always
+
+      # Windows 安装包校验（可选，便于排查问题）
+      - name: List artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem dist -Recurse | Select-Object Name, Length

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+  <title>AI FFmpeg 音视频工作台</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▶</span>
+      <div>
+        <h1>AI FFmpeg 音视频工作台</h1>
+        <div class="ffmpeg-status" id="ffmpeg-status">
+          <span class="dot pending"></span><span id="ffmpeg-status-text">正在检测 ffmpeg…</span>
+        </div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="btn-settings">⚙ 设置</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 左栏：文件 -->
+    <section class="panel" id="files-panel">
+      <div class="panel-head">
+        <h2>媒体文件</h2>
+        <button class="btn small" id="btn-add-file">+ 添加</button>
+      </div>
+      <div class="file-list" id="file-list">
+        <div class="empty-hint">点击「+ 添加」选择视频或音频文件</div>
+      </div>
+    </section>
+
+    <!-- 中栏：信息 + 操作 -->
+    <section class="panel" id="info-panel">
+      <div class="panel-head"><h2>媒体信息</h2></div>
+      <div id="media-info" class="media-info">
+        <div class="empty-hint">选择文件后显示时长、分辨率、码率等信息</div>
+      </div>
+
+      <div class="panel-head ops-head"><h2>常用操作</h2></div>
+      <div class="ops-grid" id="ops-grid">
+        <button class="op-card" data-op="convert-mp4"><span class="op-ico">📦</span>转 MP4</button>
+        <button class="op-card" data-op="extract-audio"><span class="op-ico">🎵</span>提取音频</button>
+        <button class="op-card" data-op="compress"><span class="op-ico">🗜</span>压缩</button>
+        <button class="op-card" data-op="720p"><span class="op-ico">📺</span>转 720p</button>
+        <button class="op-card" data-op="1080p"><span class="op-ico">🖥</span>转 1080p</button>
+        <button class="op-card" data-op="gif"><span class="op-ico">🎞</span>转 GIF</button>
+        <button class="op-card" data-op="mute"><span class="op-ico">🔇</span>静音</button>
+        <button class="op-card" data-op="reverse"><span class="op-ico">⏪</span>倒放</button>
+        <button class="op-card" data-op="cover"><span class="op-ico">🖼</span>生成封面</button>
+        <button class="op-card" data-op="denoise"><span class="op-ico">✨</span>降噪</button>
+      </div>
+      <div class="op-custom">
+        <input id="custom-op" placeholder="自定义参数（如：转 avi，截取 10-30s，码率 2000k）" />
+        <button class="btn" id="btn-run-custom">执行</button>
+      </div>
+    </section>
+
+    <!-- 右栏：Agent + 任务 -->
+    <section class="panel" id="agent-panel">
+      <div class="panel-head">
+        <h2>🤖 智能助手 (Agent)</h2>
+        <span class="agent-mode" id="agent-mode">本地解析</span>
+      </div>
+      <div class="chat" id="chat">
+        <div class="msg agent">
+          <div class="bubble">
+            你好！告诉我你想对媒体做什么，例如：<br>
+            「把 video.mp4 转成 mp3 并压缩」<br>
+            「截取从 10 秒到 30 秒的片段，转 720p」<br>
+            「这个视频有多长？」
+          </div>
+        </div>
+      </div>
+      <div class="chat-input">
+        <textarea id="agent-input" rows="2" placeholder="用自然语言描述你想做的操作…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button class="btn primary" id="btn-agent-send">发送</button>
+      </div>
+
+      <div class="panel-head tasks-head">
+        <h2>任务队列</h2>
+        <span class="queue-info" id="queue-info"></span>
+      </div>
+      <div class="task-list" id="task-list">
+        <div class="empty-hint">暂无任务</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 设置弹窗 -->
+  <div class="modal-mask hidden" id="settings-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>设置</h2>
+        <button class="btn small ghost" id="btn-settings-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <h3>ffmpeg 路径</h3>
+        <div class="field">
+          <label>ffmpeg 可执行文件</label>
+          <div class="row">
+            <input id="set-ffmpeg-path" placeholder="留空则自动从 PATH / 常见目录查找" />
+            <button class="btn small" id="btn-pick-ffmpeg">浏览…</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>ffprobe 可执行文件</label>
+          <div class="row">
+            <input id="set-ffprobe-path" placeholder="留空则自动查找" />
+            <button class="btn small" id="btn-pick-ffprobe">浏览…</button>
+          </div>
+        </div>
+        <div class="field">
+          <button class="btn small" id="btn-recheck-ffmpeg">重新检测 ffmpeg</button>
+          <span class="hint" id="ffmpeg-detect-result"></span>
+        </div>
+
+        <h3>大模型 (Agent 解析)</h3>
+        <p class="hint">配置 OpenAI 兼容接口后，智能助手将使用大模型理解指令；未配置时使用内置规则解析器。</p>
+        <div class="field">
+          <label>服务预设</label>
+          <select id="set-llm-preset">
+            <option value="">自定义</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI</option>
+            <option value="moonshot">Moonshot (月之暗面)</option>
+            <option value="qwen">通义千问</option>
+            <option value="zhipu">智谱 GLM</option>
+            <option value="ollama">Ollama (本地)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>接口地址 (Base URL)</label>
+          <input id="set-llm-baseurl" placeholder="https://api.deepseek.com/v1" />
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input id="set-llm-key" type="password" placeholder="sk-..." />
+        </div>
+        <div class="field">
+          <label>模型名称</label>
+          <div class="row">
+            <input id="set-llm-model" placeholder="deepseek-chat" />
+            <button class="btn small" id="btn-load-models" title="从接口读取模型列表（本地服务自动填）">读取</button>
+          </div>
+          <span class="hint" id="llm-model-result"></span>
+        </div>
+        <div class="field">
+          <button class="btn small" id="btn-test-llm">测试连接</button>
+          <span class="hint" id="llm-test-result"></span>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="btn-settings-cancel">取消</button>
+        <button class="btn primary" id="btn-settings-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toast-wrap"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
