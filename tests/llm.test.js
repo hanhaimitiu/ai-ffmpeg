@@ -29,7 +29,10 @@ function mockServer(replyFn, port) {
         const attempt = /上一次解析结果无效/.test(userMsg) ? 2 : 1;
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Connection', 'close');
-        res.end(JSON.stringify({ choices: [{ message: { content: replyFn(userMsg, attempt) } }] }));
+        res.end(JSON.stringify({
+          choices: [{ message: { content: replyFn(userMsg, attempt, parsed.messages) } }],
+          echo_messages: parsed.messages,
+        }));
       });
     });
     s.listen(port, () => resolve(s));
@@ -94,8 +97,35 @@ async function main() {
   r = await planFromText('把视频静音', media, null);
   check('未配置LLM提示设置', r.source === 'error' && r.plan.type === 'unknown' && /设置/.test(r.plan.message), JSON.stringify(r.plan).slice(0, 120));
 
-  for (const s of [s1, s2, s3, s4]) if (s.closeAllConnections) s.closeAllConnections();
-  s1.close(); s2.close(); s3.close(); s4.close();
+  // ---- 多轮对话：历史作为上下文发送 ----
+  let seenMsgs = null;
+  const s5 = await mockServer((msg, attempt, messages) => {
+    seenMsgs = messages;
+    return JSON.stringify({ type: 'operation', actions: [{ op: 'compress', crf: 32 }] });
+  }, 18127);
+  const hist = [
+    { role: 'user', content: '帮我压缩这个视频' },
+    { role: 'assistant', content: '✅ a.mp4：compress（crf=28）' },
+  ];
+  r = await planFromText('再压缩一点', media, cfg(18127), undefined, hist);
+  check('多轮：历史随请求发送', Array.isArray(seenMsgs) && seenMsgs.length === 4
+    && seenMsgs[1].content === '帮我压缩这个视频' && seenMsgs[2].role === 'assistant'
+    && seenMsgs[3].content === '再压缩一点', JSON.stringify(seenMsgs && seenMsgs.map((m) => m.role)));
+  check('多轮：结合上下文解析成功', r.source === 'llm' && r.plan.actions[0].crf === 32);
+
+  // 无历史时消息结构不变
+  seenMsgs = null;
+  await planFromText('直接压缩', media, cfg(18127));
+  check('无历史时仅 system+user', seenMsgs && seenMsgs.length === 2, JSON.stringify(seenMsgs && seenMsgs.map((m) => m.role)));
+
+  // 历史上限 6 条
+  const longHist = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `msg${i}` }));
+  seenMsgs = null;
+  await planFromText('hi', media, cfg(18127), undefined, longHist);
+  check('历史截断为最近6条', seenMsgs && seenMsgs.length === 8, `实际 ${seenMsgs && seenMsgs.length}`);
+
+  for (const s of [s1, s2, s3, s4, s5]) if (s.closeAllConnections) s.closeAllConnections();
+  s1.close(); s2.close(); s3.close(); s4.close(); s5.close();
   console.log(`\nAgent 链路测试: ${pass} 通过, ${fail} 失败`);
   setTimeout(() => process.exit(fail ? 1 : 0), 150);
 }

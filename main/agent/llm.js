@@ -47,18 +47,27 @@ async function listModels(baseURL) {
  * @param {object} opts.config { baseURL, apiKey, model }
  * @param {string} opts.system  系统提示词
  * @param {string} opts.user    用户内容
+ * @param {{role:'user'|'assistant', content:string}[]} [opts.history] 多轮对话上下文（时间顺序）
  * @param {boolean} [opts.json] 期望 JSON 输出（附带 response_format）
  * @returns {Promise<string>}
  */
-async function callLLM({ config, system, user, json = false }) {
+async function callLLM({ config, system, user, history, json = false }) {
   const base = String(config.baseURL || '').replace(/\/+$/, '');
   const url = `${base}/chat/completions`;
+  const messages = [
+    { role: 'system', content: system },
+  ];
+  if (Array.isArray(history)) {
+    for (const m of history) {
+      if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim()) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+  }
+  messages.push({ role: 'user', content: user });
   const body = {
     model: config.model,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
+    messages,
     temperature: 0.2,
   };
   if (json) {

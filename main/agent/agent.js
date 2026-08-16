@@ -52,6 +52,7 @@ function buildSystemPrompt(infoSummary) {
     '6. 如果用户没指定格式细节（如输出格式），选择最合理的默认值。',
     '7. **用户一句话可能包含多个步骤，必须把每个步骤都解析为一个 action，全部放进 actions 数组，一个都不能少。**',
     '8. trim 必须给出 start 或 end（数字秒）。',
+    '9. 这是多轮对话：对话历史里可能有之前的指令和执行结果，用户可能说「再压缩一点」「上一步改成1080p」这类指代之前内容的话，要结合历史理解其完整意图。但本次输出必须是**完整的操作列表**（从头描述这次要做什么，不是增量补丁）。',
     '',
     '示例：',
     '用户："把视频转成mp4并压缩" → {"type":"operation","actions":[{"op":"convert","targetFormat":"mp4"},{"op":"compress","crf":28}]}',
@@ -114,10 +115,12 @@ function hasEffectiveActions(actions) {
  * @param {object|null} mediaInfo 媒体信息摘要（传给 LLM 用）
  * @param {object|null} llmConfig { baseURL, apiKey, model }，null 表示未配置
  * @param {(msg:string)=>void} [onNote] 日志回调
+ * @param {{role:'user'|'assistant', content:string}[]} [history] 多轮对话上下文
  * @returns {Promise<{plan:object, source:'llm'|'error', error?:string}>}
  */
-async function planFromText(text, mediaInfo, llmConfig, onNote) {
+async function planFromText(text, mediaInfo, llmConfig, onNote, history) {
   const note = onNote || (() => {});
+  const chatHistory = Array.isArray(history) ? history.slice(-6) : [];
 
   if (!llmConfig || !llmConfig.baseURL || !llmConfig.model) {
     return {
@@ -138,7 +141,7 @@ async function planFromText(text, mediaInfo, llmConfig, onNote) {
       const userText = attempt === 2
         ? `${text}\n\n（注意：上一次解析结果无效或不完整。用户指令里的每一个步骤都必须对应一个 action，必须为 trim 提供 start 或 end，再次输出完整 JSON。）`
         : text;
-      const json = await callLLMJSON({ config: llmConfig, system, user: userText });
+      const json = await callLLMJSON({ config: llmConfig, system, user: userText, history: chatHistory });
       if (!json) throw new Error('LLM 未返回合法 JSON');
 
       if (json.type === 'inspect') {

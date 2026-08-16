@@ -205,7 +205,12 @@ function registerIpc() {
   });
 
   ipcMain.handle('agent:run', async (_e, text, filePaths, sessionId) => {
-    const history = sessionId ? sessionStore.historyForLLM(sessionId) : [];
+    let history = [];
+    if (sessionId) {
+      history = sessionStore.historyForLLM(sessionId);
+      // 渲染层发指令前已把当前用户消息写入会话，历史末尾就是它——去掉避免重复
+      if (history.length && history[history.length - 1].role === 'user') history.pop();
+    }
     return agentPipeline(String(text || ''), filePaths || [], 'agent', history);
   });
 
