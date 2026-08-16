@@ -5,6 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
   <title>AI FFmpeg 音视频工作台</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="theme-boot.js"></script>
 </head>
 <body>
   <header class="topbar" id="titlebar">
@@ -18,6 +19,11 @@
       </div>
     </div>
     <div class="top-actions">
+      <select class="theme-select" id="theme-select" title="界面皮肤">
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+        <option value="stone">暖灰</option>
+      </select>
       <button class="btn ghost" id="btn-settings">设置</button>
       <div class="win-controls">
         <button class="win-btn" id="btn-win-min" title="最小化">

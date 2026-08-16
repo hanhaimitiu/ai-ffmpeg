@@ -4,8 +4,10 @@
    配色方案：石板灰系（工具类/效率应用）
    主色 #1E293B · 辅色 #64748B · 背景 #F8FAFC
    禁止蓝/紫/靛蓝/蓝紫色阶；hover 为主色加深 10%
+   皮肤：浅色(light) / 深色(dark) / 暖灰(stone)，全部为无彩灰系
    ============================================================ */
-:root {
+:root,
+[data-theme="light"] {
   --bg: #F8FAFC;
   --panel: #FFFFFF;
   --panel-2: #F1F5F9;
@@ -15,12 +17,68 @@
   --accent: #1E293B;      /* 主色 */
   --accent-2: #475569;    /* 主色亮阶 */
   --accent-3: #334155;    /* 主色中阶 */
+  --accent-text: #FFFFFF; /* 主色按钮上的文字 */
   --hover: #0F172A;       /* 主色加深 10% */
   --green: #16A34A;
   --red: #DC2626;
   --yellow: #D97706;
+  --code-bg: #1E293B;
+  --code-border: #334155;
+  --code-text: #E2E8F0;
+  --scroll-thumb: #CBD5E1;
+  --scroll-thumb-hover: #94A3B8;
   --shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.05);
   --shadow-lg: 0 8px 32px rgba(15,23,42,.14);
+}
+
+/* 深色：石板灰暗阶（无蓝紫色相，仅明度降低） */
+[data-theme="dark"] {
+  --bg: #0F172A;
+  --panel: #1E293B;
+  --panel-2: #28354A;
+  --border: #334155;
+  --text: #E2E8F0;
+  --muted: #94A3B8;
+  --accent: #CBD5E1;
+  --accent-2: #94A3B8;
+  --accent-3: #CBD5E1;
+  --accent-text: #0F172A;
+  --hover: #F1F5F9;
+  --green: #4ADE80;
+  --red: #F87171;
+  --yellow: #FBBF24;
+  --code-bg: #0B1220;
+  --code-border: #334155;
+  --code-text: #E2E8F0;
+  --scroll-thumb: #334155;
+  --scroll-thumb-hover: #475569;
+  --shadow: 0 1px 3px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.3);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,.55);
+}
+
+/* 暖灰：石灰系（微暖无彩，区别于冷调石板灰） */
+[data-theme="stone"] {
+  --bg: #FAFAF9;
+  --panel: #FFFFFF;
+  --panel-2: #F5F5F4;
+  --border: #E7E5E4;
+  --text: #292524;
+  --muted: #78716C;
+  --accent: #292524;
+  --accent-2: #57534E;
+  --accent-3: #44403C;
+  --accent-text: #FFFFFF;
+  --hover: #1C1917;
+  --green: #16A34A;
+  --red: #DC2626;
+  --yellow: #D97706;
+  --code-bg: #292524;
+  --code-border: #44403C;
+  --code-text: #FAFAF9;
+  --scroll-thumb: #D6D3D1;
+  --scroll-thumb-hover: #A8A29E;
+  --shadow: 0 1px 3px rgba(28,25,23,.06), 0 4px 14px rgba(28,25,23,.05);
+  --shadow-lg: 0 8px 32px rgba(28,25,23,.14);
 }
 
 html, body { height: 100%; }
@@ -54,6 +112,7 @@ body {
   display: flex; align-items: center; justify-content: center;
   font-size: 16px; color: #fff;
   box-shadow: inset 0 -1px 0 rgba(255,255,255,.12);
+  border: 1px solid var(--border);
 }
 .topbar h1 { font-size: 16px; font-weight: 600; }
 .ffmpeg-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -102,8 +161,8 @@ body {
   transition: all .15s;
 }
 .btn:hover { border-color: var(--accent); color: var(--accent); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--hover); border-color: var(--hover); color: #fff; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary:hover { background: var(--hover); border-color: var(--hover); color: var(--accent-text); }
 .btn.ghost { background: transparent; }
 .btn.small { padding: 5px 12px; font-size: 12px; }
 
@@ -237,17 +296,17 @@ body {
   word-break: break-word;
 }
 .msg.agent .bubble { background: var(--panel-2); border: 1px solid var(--border); }
-.msg.user .bubble { background: var(--accent); color: #fff; box-shadow: var(--shadow); }
+.msg.user .bubble { background: var(--accent); color: var(--accent-text); box-shadow: var(--shadow); }
 .msg .bubble .meta { font-size: 11px; opacity: .7; margin-top: 6px; }
 .cmd-box {
-  background: #1E293B;
-  border: 1px solid #334155;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
   border-radius: 8px;
   padding: 8px 10px;
   margin-top: 8px;
   font-family: Consolas, monospace;
   font-size: 11px;
-  color: #E2E8F0;
+  color: var(--code-text);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -364,6 +423,19 @@ body {
 
 /* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 主题切换 ---------- */
+.theme-select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+.theme-select:focus { border-color: var(--accent); }

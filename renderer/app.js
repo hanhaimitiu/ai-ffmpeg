@@ -504,6 +504,25 @@ async function saveSettings() {
   toast('设置已保存');
 }
 
+// ---------- 主题 ----------
+
+const THEMES = ['light', 'dark', 'stone'];
+
+function applyTheme(theme) {
+  const t = THEMES.includes(theme) ? theme : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('theme', t); } catch {}
+  $('theme-select').value = t;
+}
+
+function bindTheme() {
+  $('theme-select').addEventListener('change', async (e) => {
+    const t = e.target.value;
+    applyTheme(t);
+    state.settings = await window.api.setSettings({ theme: t });
+  });
+}
+
 // ---------- 事件绑定 ----------
 
 function bindEvents() {
@@ -654,8 +673,11 @@ const LLM_PRESETS = {
 
 async function init() {
   bindEvents();
+  bindTheme();
+  applyTheme('light');
   window.api.onTaskUpdate((tasks) => renderTasks(tasks));
   state.settings = await window.api.getSettings();
+  applyTheme(state.settings.theme);
   updateAgentMode();
   await loadSessions();
   const tasks = await window.api.listTasks();

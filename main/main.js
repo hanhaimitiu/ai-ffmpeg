@@ -42,6 +42,8 @@ function saveSettings() {
 
 // ---------- 窗口 ----------
 
+const THEME_BG = { light: '#F8FAFC', dark: '#0F172A', stone: '#FAFAF9' };
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -49,7 +51,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     title: 'AI FFmpeg 音视频工作台',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: THEME_BG[settings.theme] || THEME_BG.light,
     frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -64,6 +66,13 @@ function createWindow() {
     win.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
         try {
+          if (process.env.ZCODE_THEME) {
+            await win.webContents.executeJavaScript(
+              `localStorage.setItem('theme', ${JSON.stringify(process.env.ZCODE_THEME)});
+               document.documentElement.setAttribute('data-theme', ${JSON.stringify(process.env.ZCODE_THEME)});`
+            );
+            await new Promise((r) => setTimeout(r, 400));
+          }
           const img = await win.webContents.capturePage();
           fs.writeFileSync(process.env.ZCODE_SHOT, img.toPNG());
           console.log('[shot] saved:', process.env.ZCODE_SHOT);
@@ -267,6 +276,9 @@ function registerIpc() {
     if (patch.ffmpegPath !== undefined) settings.ffmpegPath = String(patch.ffmpegPath || '');
     if (patch.ffprobePath !== undefined) settings.ffprobePath = String(patch.ffprobePath || '');
     if (patch.llm !== undefined) settings.llm = { ...(settings.llm || {}), ...(patch.llm || {}) };
+    if (patch.theme !== undefined) {
+      settings.theme = ['light', 'dark', 'stone'].includes(patch.theme) ? patch.theme : 'light';
+    }
     saveSettings();
     binaries = null;
     return settings;
