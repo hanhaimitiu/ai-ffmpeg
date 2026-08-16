@@ -140,8 +140,10 @@ function buildCommand({ input, output, actions, media, logoPath }) {
   let imageWatermark = false;
 
   for (const a of actions) {
+    if (!a || typeof a !== 'object' || !a.op) throw new Error('操作缺少 op 字段');
     switch (a.op) {
       case 'trim': {
+        if (a.start == null && a.end == null) throw new Error('trim 操作缺少 start/end 参数');
         if (a.start != null) trimStart = a.start;
         if (a.end != null) {
           if (a.fromEnd && a.start == null) {

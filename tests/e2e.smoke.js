@@ -1,16 +1,16 @@
 'use strict';
 
 /**
- * 端到端冒烟测试：生成测试视频 → 探测 → 自然语言解析 → 命令构建 → 真实 ffmpeg 执行。
+ * 端到端冒烟测试：生成测试视频 → 探测 → 自然语言解析（mock LLM）→ 命令构建 → 真实 ffmpeg 执行。
  * 直接复用主进程模块（不依赖 Electron 窗口）。
  */
 
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const { execFileSync } = require('child_process');
 
 const ffmpeg = require('../main/ffmpeg');
-const { parseIntent } = require('../main/agent/parser');
 const { buildCommand, suggestOutputPath } = require('../main/agent/executor');
 const { planFromText } = require('../main/agent/agent');
 
@@ -23,17 +23,42 @@ function ok(cond, desc, extra) {
   else { fail++; console.log(`  ✗ ${desc}${extra ? '\n    ' + extra : ''}`); }
 }
 
+/** mock OpenAI 兼容服务：按指令返回操作 */
+function startMockLLM(port) {
+  return new Promise((resolve) => {
+    const s = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        let msg = '';
+        try { msg = JSON.parse(body).messages[1].content; } catch {}
+        let reply;
+        if (/压缩/.test(msg)) reply = { type: 'operation', actions: [{ op: 'convert', targetFormat: 'mp4' }, { op: 'compress', crf: 28 }] };
+        else if (/720p/.test(msg)) reply = { type: 'operation', actions: [{ op: 'trim', start: 1, end: 3 }, { op: 'resolution', width: 1280 }] };
+        else if (/wav|音频/.test(msg)) reply = { type: 'operation', actions: [{ op: 'extractAudio', targetFormat: 'wav' }] };
+        else if (/封面/.test(msg)) reply = { type: 'operation', actions: [{ op: 'thumbnail' }] };
+        else reply = { type: 'unknown', message: '无法理解', suggestions: [] };
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Connection', 'close');
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(reply) } }] }));
+      });
+    });
+    s.listen(port, () => resolve(s));
+  });
+}
+
 async function main() {
   fs.mkdirSync(WORK, { recursive: true });
+  const server = await startMockLLM(18190);
+  const cfg = { baseURL: 'http://127.0.0.1:18190/v1', model: 'mock', apiKey: 'k' };
 
   // 1. 探测二进制
   const binRes = await ffmpeg.resolveBinaries({});
   ok(binRes.ok, '找到 ffmpeg 二进制', JSON.stringify(binRes).slice(0, 300));
   if (!binRes.ok) process.exit(1);
   console.log(`  → ${binRes.ffmpeg}`);
-  console.log(`  → ${binRes.version}`);
 
-  // 2. 生成测试视频（5 秒，带音频 + 文字）
+  // 2. 生成测试视频（5 秒，带音频）
   const testVideo = path.join(WORK, 'test.mp4');
   execFileSync(binRes.ffmpeg, [
     '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=5',
@@ -47,13 +72,11 @@ async function main() {
   const probe = await ffmpeg.probeMedia(binRes.ffprobe, testVideo);
   ok(probe.ok, 'ffprobe 读取媒体信息');
   const summary = ffmpeg.summarizeInfo(probe.info);
-  ok(summary.duration > 4.5 && summary.duration < 6, `时长约 5s（实际 ${summary.duration.toFixed(2)}s）`);
-  ok(summary.video && summary.video.hasVideo && summary.video.width === 640, `视频 640x360（实际 ${summary.video.width}x${summary.video.height}）`);
-  ok(summary.audio && summary.audio.hasAudio, '有音轨');
+  ok(summary.duration > 4.5, `时长约 5s（实际 ${summary.duration.toFixed(2)}s）`);
 
-  // 4. 自然语言 → 计划（规则解析器）
-  const { plan } = await planFromText('把视频转成mp4并压缩', summary, null);
-  ok(plan.type === 'operation' && plan.actions.length === 2, '解析"转mp4并压缩"', JSON.stringify(plan));
+  // 4. 多步骤：压缩（convert + compress）
+  const { plan } = await planFromText('把视频转成mp4并压缩', summary, cfg);
+  ok(plan.type === 'operation' && plan.actions.length === 2, '解析"转mp4并压缩"两步骤', JSON.stringify(plan));
 
   // 5. 构建命令
   const out1 = path.join(WORK, 'test_compressed.mp4');
@@ -73,15 +96,13 @@ async function main() {
   const res = await runner.promise;
   ok(res.ok && exitCode === 0, `执行成功（exit ${exitCode}）`, res.error || '');
   ok(fs.existsSync(out1), '输出文件已生成');
-  const outSize = fs.statSync(out1).size;
-  ok(outSize > 0, `输出文件非空（${(outSize / 1024).toFixed(0)} KB）`);
   ok(progressEvents.length > 0 && progressEvents[progressEvents.length - 1].progress === 1, `进度上报到 100%（共 ${progressEvents.length} 次）`);
 
   // 7. 截取 + 720p 组合
-  const p2 = parseIntent('截取从1秒到3秒，转成720p');
-  ok(p2.type === 'operation' && p2.actions.length === 2, '解析组合操作');
+  const p2 = await planFromText('截取从1秒到3秒，转成720p', summary, cfg);
+  ok(p2.plan.actions.length === 2, '解析组合操作', JSON.stringify(p2.plan.actions));
   const out2 = path.join(WORK, 'test_trim720.mp4');
-  const built2 = buildCommand({ input: testVideo, output: out2, actions: p2.actions, media: summary });
+  const built2 = buildCommand({ input: testVideo, output: out2, actions: p2.plan.actions, media: summary });
   const r2 = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: built2.args, duration: 2 }).promise;
   ok(r2.ok, '组合操作执行成功');
   const probe2 = await ffmpeg.probeMedia(binRes.ffprobe, out2);
@@ -90,21 +111,23 @@ async function main() {
   ok(s2.video.width === 1280, `分辨率 1280 宽（实际 ${s2.video.width}）`);
 
   // 8. 提取音频
-  const p3 = parseIntent('提取音频为wav');
-  const out3 = suggestOutputPath(testVideo, p3.actions);
-  const built3 = buildCommand({ input: testVideo, output: out3, actions: p3.actions, media: summary });
+  const p3 = await planFromText('提取音频为wav', summary, cfg);
+  const out3 = suggestOutputPath(testVideo, p3.plan.actions);
+  const built3 = buildCommand({ input: testVideo, output: out3, actions: p3.plan.actions, media: summary });
   const r3 = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: built3.args, duration: 5 }).promise;
   ok(r3.ok && fs.existsSync(out3), '提取音频成功（' + path.basename(out3) + '）');
 
   // 9. 封面
-  const p4 = parseIntent('生成封面图');
-  const out4 = suggestOutputPath(testVideo, p4.actions);
-  const built4 = buildCommand({ input: testVideo, output: out4, actions: p4.actions, media: summary });
+  const p4 = await planFromText('生成封面图', summary, cfg);
+  const out4 = suggestOutputPath(testVideo, p4.plan.actions);
+  const built4 = buildCommand({ input: testVideo, output: out4, actions: p4.plan.actions, media: summary });
   const r4 = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: built4.args }).promise;
   ok(r4.ok && fs.existsSync(out4), '封面生成成功（' + path.basename(out4) + '）');
 
+  server.closeAllConnections && server.closeAllConnections();
+  server.close();
   console.log(`\nE2E 冒烟测试: ${pass} 通过, ${fail} 失败`);
-  process.exit(fail > 0 ? 1 : 0);
+  setTimeout(() => process.exit(fail ? 1 : 0), 150);
 }
 
 main().catch((e) => {

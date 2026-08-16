@@ -235,8 +235,8 @@ function updateAgentMode() {
     el.textContent = `LLM: ${s.model}`;
     el.style.color = 'var(--green)';
   } else {
-    el.textContent = '本地解析';
-    el.style.color = 'var(--accent-2)';
+    el.textContent = '未配置大模型';
+    el.style.color = 'var(--yellow)';
   }
 }
 
@@ -250,6 +250,13 @@ async function sendAgent() {
   }
   if (!state.ffmpegOk) {
     toast('ffmpeg 不可用，请先在设置中配置', 'err');
+    return;
+  }
+  const llmCfg = state.settings.llm;
+  if (!llmCfg || !llmCfg.baseURL || !llmCfg.model) {
+    addChatMsg('user', esc(text));
+    addChatMsg('agent', '⚠ 尚未配置大模型，无法理解指令。请打开右上角「设置」→ 配置大模型（支持本地 llama.cpp / Ollama / DeepSeek 等 OpenAI 兼容接口）。');
+    input.value = '';
     return;
   }
 
@@ -299,9 +306,9 @@ function renderAgentResult(res) {
     return `<div style="margin-bottom:10px">⚠ <b>${esc(name)}</b>：${esc(res.error)}</div>`;
   }
   // operation 已入队
-  const src = res.plan && res.plan.source === 'llm' ? '大模型' : '本地解析';
+  const src = '大模型';
   return `<div style="margin-bottom:12px">
-    <div>✅ <b>${esc(name)}</b> — 已加入任务队列（${src}）</div>
+    <div>✅ <b>${esc(name)}</b> — 已加入任务队列（${src}解析）</div>
     <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(res.plan ? res.plan.title : '')}</div>
     <div class="cmd-box">${esc(res.command || '')}</div>
   </div>`;

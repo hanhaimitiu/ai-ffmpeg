@@ -2,7 +2,7 @@
 
 /**
  * 真实本地大模型验证（llama.cpp / Ollama 等 OpenAI 兼容本地服务）。
- * 验证：自然语言 → 大模型结构化解析 → 命令构建 → 真实 ffmpeg 执行。
+ * 验证：自然语言 → 大模型结构化解析（含多步骤）→ 命令构建 → 真实 ffmpeg 执行。
  * 本地服务未启动时自动跳过（不失败）。
  */
 
@@ -68,14 +68,16 @@ async function main() {
     ['这个视频有多长', (p) => p.type === 'inspect'],
     ['提取音频', (p) => p.type === 'operation' && p.actions.some((a) => a.op === 'extractAudio')],
     ['生成封面图', (p) => p.type === 'operation' && p.actions.some((a) => a.op === 'thumbnail')],
+    // 多步骤：三个动作必须全部解析
+    ['转成mp4，截取前3秒，然后压缩', (p) => p.type === 'operation' && p.actions.length === 3 && ['convert', 'trim', 'compress'].every((op) => p.actions.some((a) => a.op === op)), '要求3个action完整返回'],
   ];
 
-  for (const [text, pred] of cases) {
+  for (const [text, pred, extra] of cases) {
     const r = await planFromText(text, media, cfg, () => {});
-    check(`「${text}」→ ${r.source === 'llm' ? '大模型' : '本地解析'}`, r.source === 'llm' && pred(r.plan), JSON.stringify(r.plan).slice(0, 200));
+    check(`「${text}」`, pred(r.plan), `${extra || ''} 实际: ${JSON.stringify(r.plan).slice(0, 200)}`);
   }
 
-  // 真实执行一条：截取 + 720p
+  // 真实执行一条多步骤：截取 + 720p
   const r = await planFromText('截取从1秒到3秒，转成720p', media, cfg);
   if (r.source === 'llm' && r.plan.type === 'operation') {
     const out = path.join(WORK, 'real_trim720.mp4');

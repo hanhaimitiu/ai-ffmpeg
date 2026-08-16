@@ -64,7 +64,7 @@
     <section class="panel" id="agent-panel">
       <div class="panel-head">
         <h2>智能助手 (Agent)</h2>
-        <span class="agent-mode" id="agent-mode">本地解析</span>
+        <span class="agent-mode" id="agent-mode">未配置</span>
       </div>
       <div class="chat" id="chat">
         <div class="msg agent">
@@ -120,7 +120,7 @@
         </div>
 
         <h3>大模型 (Agent 解析)</h3>
-        <p class="hint">配置 OpenAI 兼容接口后，智能助手将使用大模型理解指令；未配置时使用内置规则解析器。</p>
+        <p class="hint">智能助手必须依赖大模型理解指令（OpenAI 兼容接口，支持本地 llama.cpp / Ollama / DeepSeek 等）。未配置时助手不可用。</p>
         <div class="field">
           <label>服务预设</label>
           <select id="set-llm-preset">
