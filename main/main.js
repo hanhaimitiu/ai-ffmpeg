@@ -47,7 +47,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     title: 'AI FFmpeg 音视频工作台',
-    backgroundColor: '#0f1117',
+    backgroundColor: '#F8FAFC',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -281,6 +281,7 @@ function registerIpc() {
 
 // ---------- 应用生命周期 ----------
 
+if (process.env.ZCODE_NO_LCD) app.commandLine.appendSwitch("disable-lcd-text");
 app.whenReady().then(() => {
   loadSettings();
   registerIpc();

@@ -109,7 +109,7 @@ function renderFiles() {
   }
   list.innerHTML = state.files.map((f) => {
     const isV = f.info && f.info.video && f.info.video.hasVideo;
-    const ico = isV ? '🎬' : f.info && f.info.audio && f.info.audio.hasAudio ? '🎵' : '📄';
+    const ico = isV ? '▣' : f.info && f.info.audio && f.info.audio.hasAudio ? '♪' : '▧';
     const sub = f.info ? `${fmtDur(f.info.duration)} · ${fmtSize(f.info.size)}` : '未探测';
     return `<div class="file-item ${f.path === state.selectedPath ? 'selected' : ''}" data-path="${esc(f.path)}">
       <span class="file-ico">${ico}</span>
@@ -283,7 +283,7 @@ function renderAgentResult(res) {
   if (res.kind === 'inspect') {
     const i = res.info;
     const lines = [
-      `📄 <b>${esc(name)}</b>`,
+      `▧ <b>${esc(name)}</b>`,
       `格式：${(i.formatName || '-').toUpperCase()} · 时长：${fmtDur(i.duration)} · 大小：${fmtSize(i.size)}`,
     ];
     if (i.video && i.video.hasVideo) lines.push(`视频：${i.video.width}×${i.video.height} · ${i.video.codec} · ${i.video.fps} fps`);
