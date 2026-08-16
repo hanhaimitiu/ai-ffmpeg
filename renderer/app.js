@@ -8,6 +8,8 @@ const state = {
   ffmpegOk: false,
   settings: {},
   agentRunning: false,
+  sessionId: null,      // 当前会话 id
+  sessions: [],         // 会话列表元信息
 };
 
 const $ = (id) => document.getElementById(id);
@@ -216,6 +218,85 @@ function statusLabel(s) {
   return { queued: '排队中', running: '处理中', done: '完成', error: '失败', cancelled: '已取消' }[s] || s;
 }
 
+// ---------- 会话管理 ----------
+
+const WELCOME_HTML = `你好！告诉我你想对媒体做什么，例如：<br>
+「把 video.mp4 转成 mp3 并压缩」<br>
+「截取从 10 秒到 30 秒的片段，转 720p」<br>
+「这个视频有多长？」`;
+
+async function loadSessions() {
+  state.sessions = await window.api.listSessions();
+  if (!state.sessions.length) {
+    const s = await window.api.createSession('新会话');
+    state.sessions = await window.api.listSessions();
+    state.sessionId = s.id;
+  } else {
+    state.sessionId = state.sessions[0].id; // 最近活跃在前
+  }
+  renderSessionSelect();
+  await openSession(state.sessionId);
+}
+
+function renderSessionSelect() {
+  const sel = $('session-select');
+  sel.innerHTML = state.sessions.map((s) =>
+    `<option value="${esc(s.id)}" ${s.id === state.sessionId ? 'selected' : ''}>${esc(s.title)}</option>`).join('');
+}
+
+async function openSession(id) {
+  state.sessionId = id;
+  renderSessionSelect();
+  const s = await window.api.getSession(id);
+  const chat = $('chat');
+  chat.innerHTML = '';
+  if (!s || !s.messages || !s.messages.length) {
+    addChatMsg('agent', WELCOME_HTML);
+    return;
+  }
+  for (const m of s.messages) {
+    if (m.role === 'user') {
+      addChatMsg('user', esc(m.text));
+    } else {
+      const html = Array.isArray(m.results) && m.results.length
+        ? m.results.map((res) => renderAgentResult(res)).join('')
+        : esc(m.text);
+      addChatMsg('agent', html || '（无内容）');
+    }
+  }
+}
+
+async function newSession() {
+  if (state.agentRunning) { toast('正在处理中，请稍候', 'err'); return; }
+  const s = await window.api.createSession('新会话');
+  state.sessions = await window.api.listSessions();
+  await openSession(s.id);
+  $('agent-input').focus();
+}
+
+async function deleteCurrentSession() {
+  if (state.agentRunning) { toast('正在处理中，请稍候', 'err'); return; }
+  const cur = state.sessions.find((x) => x.id === state.sessionId);
+  if (!cur) return;
+  if (!confirm(`删除会话「${cur.title}」？聊天记录将不可恢复。`)) return;
+  await window.api.deleteSession(state.sessionId);
+  state.sessions = await window.api.listSessions();
+  if (!state.sessions.length) {
+    const s = await window.api.createSession('新会话');
+    state.sessions = await window.api.listSessions();
+    await openSession(s.id);
+  } else {
+    await openSession(state.sessions[0].id);
+  }
+  toast('会话已删除');
+}
+
+/** 刷新会话下拉标题（首条消息后会自动改名） */
+async function refreshSessionTitles() {
+  state.sessions = await window.api.listSessions();
+  renderSessionSelect();
+}
+
 // ---------- Agent ----------
 
 function addChatMsg(role, html) {
@@ -255,31 +336,52 @@ async function sendAgent() {
   const llmCfg = state.settings.llm;
   if (!llmCfg || !llmCfg.baseURL || !llmCfg.model) {
     addChatMsg('user', esc(text));
-    addChatMsg('agent', '⚠ 尚未配置大模型，无法理解指令。请打开右上角「设置」→ 配置大模型（支持本地 llama.cpp / Ollama / DeepSeek 等 OpenAI 兼容接口）。');
     input.value = '';
+    const hint = '⚠ 尚未配置大模型，无法理解指令。请打开右上角「设置」→ 配置大模型（支持本地 llama.cpp / Ollama / DeepSeek 等 OpenAI 兼容接口）。';
+    addChatMsg('agent', hint);
+    await window.api.appendSessionMessage(state.sessionId, { role: 'user', text });
+    await window.api.appendSessionMessage(state.sessionId, { role: 'assistant', text: hint });
     return;
   }
 
   addChatMsg('user', esc(text));
+  await window.api.appendSessionMessage(state.sessionId, { role: 'user', text });
   input.value = '';
   state.agentRunning = true;
   $('btn-agent-send').disabled = true;
   const thinking = addChatMsg('agent', '<span style="opacity:.6">正在理解你的指令…</span>');
 
+  let assistantText = '';
+  let assistantResults = undefined;
   try {
     const targets = state.files.map((f) => f.path);
-    const r = await window.api.runAgent(text, targets);
+    const r = await window.api.runAgent(text, targets, state.sessionId);
 
     if (r.type === 'error') {
-      thinking.querySelector('.bubble').innerHTML = `⚠ ${esc(r.error)}`;
+      assistantText = `⚠ ${r.error}`;
+      thinking.querySelector('.bubble').innerHTML = assistantText;
       return;
     }
 
+    assistantResults = r.results;
+    assistantText = r.results.map((res) => {
+      const name = String(res.filePath || '').split(/[\\/]/).pop();
+      if (res.kind === 'inspect') return `已查看 ${name} 的媒体信息`;
+      if (res.ok === false) return `⚠ ${name}：${res.message || res.error}`;
+      return `✅ ${name}：${res.plan ? res.plan.title : '已加入任务队列'}`;
+    }).join('\n');
     const html = r.results.map((res) => renderAgentResult(res)).join('');
     thinking.querySelector('.bubble').innerHTML = html || '（无结果）';
   } catch (e) {
-    thinking.querySelector('.bubble').innerHTML = `⚠ 执行出错：${esc(e.message)}`;
+    assistantText = `⚠ 执行出错：${e.message}`;
+    thinking.querySelector('.bubble').innerHTML = assistantText;
   } finally {
+    await window.api.appendSessionMessage(state.sessionId, {
+      role: 'assistant',
+      text: assistantText,
+      results: assistantResults,
+    });
+    refreshSessionTitles();
     state.agentRunning = false;
     $('btn-agent-send').disabled = false;
   }
@@ -503,6 +605,13 @@ function bindEvents() {
     }
   };
 
+  // 会话
+  $('session-select').addEventListener('change', (e) => {
+    if (e.target.value && e.target.value !== state.sessionId) openSession(e.target.value);
+  });
+  $('btn-new-session').onclick = newSession;
+  $('btn-del-session').onclick = deleteCurrentSession;
+
   // 拖拽文件
   document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', (e) => {
@@ -548,6 +657,7 @@ async function init() {
   window.api.onTaskUpdate((tasks) => renderTasks(tasks));
   state.settings = await window.api.getSettings();
   updateAgentMode();
+  await loadSessions();
   const tasks = await window.api.listTasks();
   renderTasks(tasks);
   await refreshFFmpegStatus();

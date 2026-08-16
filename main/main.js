@@ -9,10 +9,12 @@ const { TaskManager } = require('./taskManager');
 const { planFromText } = require('./agent/agent');
 const { buildCommand, suggestOutputPath } = require('./agent/executor');
 const { callLLM, listModels } = require('./agent/llm');
+const { SessionStore } = require('./sessions');
 
 let win = null;
 let binaries = null; // { ffmpeg, ffprobe, version }
 let settings = {};
+let sessionStore = null;
 const settingsFile = () => (app ? path.join(app.getPath('userData'), 'settings.json') : '');
 
 const taskManager = new TaskManager((state) => {
@@ -123,7 +125,7 @@ function enqueueFFmpegTask({ input, output, args, duration, title, type, display
 
 // ---------- Agent 流程 ----------
 
-async function agentPipeline(text, filePaths, source) {
+async function agentPipeline(text, filePaths, source, history) {
   const binRes = await ensureBinaries();
   if (!binRes.ok) return { type: 'error', error: binRes.error };
 
@@ -140,7 +142,7 @@ async function agentPipeline(text, filePaths, source) {
       continue;
     }
     const summary = ffmpeg.summarizeInfo(probe.info);
-    const { plan, source: planSource } = await planFromText(text, summary, llmConfig, note);
+    const { plan, source: planSource } = await planFromText(text, summary, llmConfig, note, history);
 
     if (plan.type === 'inspect') {
       results.push({ filePath, ok: true, kind: 'inspect', info: { ...summary, filePath, full: probe.info } });
@@ -202,8 +204,9 @@ function registerIpc() {
     return { ok: true, summary: { ...ffmpeg.summarizeInfo(probe.info), filePath, full: probe.info } };
   });
 
-  ipcMain.handle('agent:run', async (_e, text, filePaths) => {
-    return agentPipeline(String(text || ''), filePaths || [], 'agent');
+  ipcMain.handle('agent:run', async (_e, text, filePaths, sessionId) => {
+    const history = sessionId ? sessionStore.historyForLLM(sessionId) : [];
+    return agentPipeline(String(text || ''), filePaths || [], 'agent', history);
   });
 
   ipcMain.handle('agent:preview', async (_e, text, filePath) => {
@@ -283,6 +286,20 @@ function registerIpc() {
     return listModels(String(baseURL || ''));
   });
 
+  // ---------- 会话 ----------
+  ipcMain.handle('sessions:list', () => sessionStore.list());
+  ipcMain.handle('sessions:get', (_e, id) => sessionStore.get(id));
+  ipcMain.handle('sessions:create', (_e, title) => sessionStore.create(title));
+  ipcMain.handle('sessions:rename', (_e, id, title) => {
+    const s = sessionStore.rename(id, title);
+    return s ? { ok: true, session: s } : { ok: false, error: '会话不存在' };
+  });
+  ipcMain.handle('sessions:delete', (_e, id) => ({ ok: sessionStore.delete(id) }));
+  ipcMain.handle('sessions:append', (_e, id, msg) => {
+    const s = sessionStore.appendMessage(id, msg);
+    return s ? { ok: true, session: s } : { ok: false, error: '会话不存在' };
+  });
+
   ipcMain.handle('dialog:pick-file', async (_e, multi) => {
     const r = await dialog.showOpenDialog(win, {
       properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
@@ -314,6 +331,7 @@ function registerIpc() {
 if (process.env.ZCODE_NO_LCD) app.commandLine.appendSwitch("disable-lcd-text");
 app.whenReady().then(() => {
   loadSettings();
+  sessionStore = new SessionStore(path.join(app.getPath('userData'), 'sessions.json'));
   registerIpc();
   createWindow();
 

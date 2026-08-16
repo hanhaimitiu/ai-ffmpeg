@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('api', {
   probeMedia: (filePath) => ipcRenderer.invoke('ffmpeg:probe', filePath),
 
   // agent
-  runAgent: (text, filePaths) => ipcRenderer.invoke('agent:run', text, filePaths),
+  runAgent: (text, filePaths, sessionId) => ipcRenderer.invoke('agent:run', text, filePaths, sessionId),
   previewAgent: (text, filePath) => ipcRenderer.invoke('agent:preview', text, filePath),
 
   // tasks
@@ -26,6 +26,14 @@ contextBridge.exposeInMainWorld('api', {
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   testLLM: (cfg) => ipcRenderer.invoke('llm:test', cfg),
   listLLMModels: (baseURL) => ipcRenderer.invoke('llm:models', baseURL),
+
+  // sessions
+  listSessions: () => ipcRenderer.invoke('sessions:list'),
+  getSession: (id) => ipcRenderer.invoke('sessions:get', id),
+  createSession: (title) => ipcRenderer.invoke('sessions:create', title),
+  renameSession: (id, title) => ipcRenderer.invoke('sessions:rename', id, title),
+  deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
+  appendSessionMessage: (id, msg) => ipcRenderer.invoke('sessions:append', id, msg),
 
   // dialogs
   pickFiles: (multi) => ipcRenderer.invoke('dialog:pick-file', multi),

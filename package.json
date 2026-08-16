@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node tests/llm.test.js && node tests/executor.test.js",
+    "test": "node tests/llm.test.js && node tests/executor.test.js && node tests/sessions.test.js",
     "test:e2e": "node tests/e2e.smoke.js",
     "test:real": "node tests/llm.real.js",
     "build": "electron-builder",
