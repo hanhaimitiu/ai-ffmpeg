@@ -7,8 +7,8 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
+  <header class="topbar" id="titlebar">
+    <div class="brand drag-region">
       <span class="logo">▶</span>
       <div>
         <h1>AI FFmpeg 音视频工作台</h1>
@@ -19,6 +19,17 @@
     </div>
     <div class="top-actions">
       <button class="btn ghost" id="btn-settings">设置</button>
+      <div class="win-controls">
+        <button class="win-btn" id="btn-win-min" title="最小化">
+          <svg width="12" height="12" viewBox="0 0 12 12"><rect y="5" width="12" height="1.5" rx=".5" fill="currentColor"/></svg>
+        </button>
+        <button class="win-btn" id="btn-win-max" title="最大化">
+          <svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+        <button class="win-btn win-btn-close" id="btn-win-close" title="关闭">
+          <svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
     </div>
   </header>
 

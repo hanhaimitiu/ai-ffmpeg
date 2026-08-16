@@ -33,4 +33,15 @@ contextBridge.exposeInMainWorld('api', {
 
   // utils
   platform: process.platform,
+
+  // window controls (frameless mode)
+  minimizeWindow: () => ipcRenderer.send('win:minimize'),
+  maximizeWindow: () => ipcRenderer.send('win:maximize'),
+  closeWindow: () => ipcRenderer.send('win:close'),
+  isMaximized: () => ipcRenderer.invoke('win:is-maximized'),
+  onMaximizeChanged: (cb) => {
+    const handler = (_e, flag) => cb(flag);
+    ipcRenderer.on('win:maximize-changed', handler);
+    return () => ipcRenderer.removeListener('win:maximize-changed', handler);
+  },
 });

@@ -48,6 +48,7 @@ function createWindow() {
     minHeight: 700,
     title: 'AI FFmpeg 音视频工作台',
     backgroundColor: '#F8FAFC',
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -55,6 +56,29 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // 开发辅助：ZCODE_SHOT=路径 时加载完成后截图（默认无副作用）
+  if (process.env.ZCODE_SHOT) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(async () => {
+        try {
+          const img = await win.webContents.capturePage();
+          fs.writeFileSync(process.env.ZCODE_SHOT, img.toPNG());
+          console.log('[shot] saved:', process.env.ZCODE_SHOT);
+        } catch (e) {
+          console.error('[shot] fail:', e.message);
+        }
+        win.close();
+      }, 2500);
+    });
+  }
+
+  // 无框窗口：把最大化状态变化推送给渲染进程（用于切换按钮图标）
+  const sendMaxState = () => {
+    if (!win.isDestroyed()) win.webContents.send('win:maximize-changed', win.isMaximized());
+  };
+  win.on('maximize', sendMaxState);
+  win.on('unmaximize', sendMaxState);
 }
 
 // ---------- 探测工具 ----------
@@ -277,6 +301,12 @@ function registerIpc() {
     });
     return r.canceled ? null : r.filePaths[0];
   });
+
+  // 窗口控制（无框模式）
+  ipcMain.on('win:minimize', () => { if (win) win.minimize(); });
+  ipcMain.on('win:maximize', () => { if (win) (win.isMaximized() ? win.unmaximize() : win.maximize()); });
+  ipcMain.on('win:close', () => { if (win) win.close(); });
+  ipcMain.handle('win:is-maximized', () => (win ? win.isMaximized() : false));
 }
 
 // ---------- 应用生命周期 ----------

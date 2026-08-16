@@ -510,6 +510,25 @@ function bindEvents() {
     const files = [...(e.dataTransfer.files || [])].map((f) => f.path);
     if (files.length) addFiles(files);
   });
+
+  // 无框窗口控制
+  $('btn-win-min').onclick = () => window.api.minimizeWindow();
+  $('btn-win-max').onclick = () => window.api.maximizeWindow();
+  $('btn-win-close').onclick = () => window.api.closeWindow();
+  const maxBtn = $('btn-win-max');
+  const setMaxIcon = (isMax) => {
+    maxBtn.innerHTML = isMax
+      ? '<svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="3.5" width="7.5" height="7.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.5 3.5V2a1 1 0 0 1 1-1H10a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1H8.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+    maxBtn.title = isMax ? '还原' : '最大化';
+  };
+  window.api.onMaximizeChanged(setMaxIcon);
+  window.api.isMaximized().then(setMaxIcon).catch(() => {});
+  // 双击顶栏切换最大化
+  $('titlebar').addEventListener('dblclick', (e) => {
+    if (e.target.closest('button') || e.target.closest('.btn')) return;
+    window.api.maximizeWindow();
+  });
 }
 
 // ---------- 启动 ----------
