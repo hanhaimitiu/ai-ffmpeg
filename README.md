@@ -105,14 +105,20 @@ npm run test:real    # 真实本地大模型验证（需 llama.cpp/Ollama 已启
 
 本项目使用 **GitHub Actions + electron-builder** 实现发布即自动构建：推送一个 `v*` 格式的 tag 时，CI 会在 Windows / Ubuntu / macOS 三平台上自动打包安装程序并发布到 [GitHub Releases](https://github.com/hanhaimitiu/ai-ffmpeg/releases)。
 
-发布新版本：
+发布新版本（注意：electron-builder 以 `package.json` 中的 version 作为 release 版本，tag 仅用于触发）：
 
 ```bash
-git tag v1.0.0          # 版本号需大于已发布版本
-git push origin v1.0.0  # 触发 CI 自动构建与发布
+# 1. 修改 package.json 的 version（如 1.1.0），提交推送
+git commit -am "chore: release v1.1.0"
+git push origin main
+# 2. 打对应 tag（必须与 version 一致）并推送，触发 CI 自动构建与发布
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
-工作流：`npm test` 质量门 → electron-builder 打包（Windows NSIS / macOS dmg / Linux AppImage）→ 上传 Releases。可在仓库 Actions 页查看进度。
+工作流：`npm test` 质量门 → electron-builder 打包（Windows NSIS / macOS dmg / Linux AppImage）→ 上传 GitHub Releases。可在仓库 Actions 页查看进度。
+
+> 本地打包提示：Windows 上若未开启开发者模式，electron-builder 解压 winCodeSign 工具可能因无符号链接权限失败，CI 不受影响（runner 有管理员权限）。本地可设置 `CSC_IDENTITY_AUTO_DISCOVERY=false` 跳过签名。
 
 ## 📄 开源许可
 
