@@ -156,6 +156,17 @@ function renderMediaInfo(info, loading) {
     cells.push(['音频编码', info.audio.codec || '-']);
     cells.push(['声道', info.audio.channels ? `${info.audio.channels} 声道` : '-']);
   }
+  // 流列表：多音轨/多字幕可见（Agent 可直接按 audioIndex 选择）
+  if (Array.isArray(info.streams)) {
+    const audios = info.streams.filter((s) => s.type === 'audio');
+    const subs = info.streams.filter((s) => s.type === 'subtitle');
+    const parts = [];
+    if (audios.length > 1) {
+      parts.push(`${audios.length} 条音轨：${audios.map((a, i) => `${a.language || '未知语言'}(轨${i})`).join('、')}`);
+    }
+    if (subs.length) parts.push(`${subs.length} 条字幕轨`);
+    if (parts.length) cells.push(['流信息', parts.join(' · ')]);
+  }
   el.innerHTML = `<div class="info-grid">${cells.map(([k, v]) =>
     `<div class="info-cell"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join('')}</div>`;
 }
@@ -452,20 +463,12 @@ async function runCustom() {
   if (!text) return;
   const f = state.files.find((x) => x.path === state.selectedPath);
   if (!f) { toast('请先选择文件', 'err'); return; }
-  // 走 Agent 解析预览
+  // 直接走 Agent 管线（单文件），支持流级操作与多步骤
   try {
-    const r = await window.api.previewAgent(text, f.path);
-    if (r.type === 'inspect') {
-      toast('这是查询类指令，请到智能助手发送', 'err');
-      return;
-    }
-    if (r.type === 'unknown') {
-      toast('无法理解该指令：' + (r.message || ''), 'err');
-      return;
-    }
+    const r = await window.api.runAgent(text, [f.path], null);
     if (r.type === 'error') { toast('解析失败：' + r.error, 'err'); return; }
-    addChatMsg('agent', `自定义操作「${esc(text)}」解析为：<b>${esc(r.plan.title)}</b><div class="cmd-box">${esc(r.command)}</div>`);
-    await runOps(r.plan.actions);
+    const html = r.results.map((res) => renderAgentResult(res)).join('');
+    addChatMsg('agent', `自定义操作「${esc(text)}」：<br>${html}`);
   } catch (e) {
     toast('解析失败：' + e.message, 'err');
   }

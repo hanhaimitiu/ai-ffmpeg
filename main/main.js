@@ -6,7 +6,7 @@ const fs = require('fs');
 
 const ffmpeg = require('./ffmpeg');
 const { TaskManager } = require('./taskManager');
-const { planFromText } = require('./agent/agent');
+const { runAgentGraph } = require('./agent/graph');
 const { buildCommand, suggestOutputPath } = require('./agent/executor');
 const { callLLM, listModels } = require('./agent/llm');
 const { SessionStore } = require('./sessions');
@@ -138,11 +138,11 @@ async function agentPipeline(text, filePaths, source, history) {
   const binRes = await ensureBinaries();
   if (!binRes.ok) return { type: 'error', error: binRes.error };
 
-  const llmConfig = settings.llm || null;
   const notes = [];
   const note = (m) => notes.push(m);
 
-  // 对每个文件探测 + 规划
+  // 先探测全部文件（含完整流列表），供 LLM 做多文件/流级规划
+  const files = [];
   const results = [];
   for (const filePath of filePaths) {
     const probe = await ffmpeg.probeMedia(binRes.ffprobe, filePath);
@@ -150,48 +150,62 @@ async function agentPipeline(text, filePaths, source, history) {
       results.push({ filePath, ok: false, error: '无法读取媒体信息: ' + probe.error });
       continue;
     }
-    const summary = ffmpeg.summarizeInfo(probe.info);
-    const { plan, source: planSource } = await planFromText(text, summary, llmConfig, note, history);
+    files.push({ path: filePath, name: filePath.split(/[\\/]/).pop(), info: ffmpeg.summarizeInfo(probe.info) });
+  }
+  if (!files.length && !results.length) return { type: 'done', notes, results: [] };
 
-    if (plan.type === 'inspect') {
-      results.push({ filePath, ok: true, kind: 'inspect', info: { ...summary, filePath, full: probe.info } });
-      continue;
-    }
-    if (plan.type === 'unknown') {
-      results.push({ filePath, ok: false, kind: 'unknown', message: plan.message, suggestions: plan.suggestions });
-      continue;
-    }
-    if (plan.type === 'error') {
-      results.push({ filePath, ok: false, kind: 'unknown', message: plan.message || '解析失败', suggestions: plan.suggestions || [] });
-      continue;
-    }
+  const out = await runAgentGraph({
+    text,
+    files,
+    llmConfig: settings.llm || null,
+    history: history || [],
+    onNote: note,
+  });
 
-    // operation：构建命令并入队
+  if (out.kind === 'inspect') {
+    // 每个文件返回媒体信息（含流列表）
+    for (const f of files) {
+      results.push({ filePath: f.path, ok: true, kind: 'inspect', info: { ...f.info, filePath: f.path } });
+    }
+    return { type: 'done', notes, results };
+  }
+  if (out.kind === 'unknown') {
+    for (const f of files) {
+      results.push({ filePath: f.path, ok: false, kind: 'unknown', message: out.message, suggestions: out.suggestions });
+    }
+    return { type: 'done', notes, results };
+  }
+  if (out.kind !== 'operation') {
+    return { type: 'error', error: (out.message || '解析失败') + (out.warnings && out.warnings.length ? `（${out.warnings.join('；')}）` : '') };
+  }
+
+  // operation：把图产出的命令任务入队
+  for (const task of out.tasks) {
+    const file = files[task.fileIndex];
     try {
-      const output = suggestOutputPath(filePath, plan.actions);
-      const built = buildCommand({ input: filePath, output, actions: plan.actions, media: summary });
       const t = enqueueFFmpegTask({
-        input: filePath,
-        output,
-        args: built.args,
-        duration: summary.duration || 0,
-        title: plan.title || '媒体处理',
+        input: task.kind === 'concat' ? null : file.path,
+        output: task.output,
+        args: task.args,
+        duration: task.duration || 0,
+        title: task.title,
         type: source === 'agent' ? 'agent' : 'operation',
-        display: built.display,
+        display: task.display,
       });
       results.push({
-        filePath,
+        filePath: file.path,
         ok: true,
         kind: 'operation',
         taskId: t.id,
-        output,
-        command: built.display,
-        plan: { title: plan.title, actions: plan.actions, source: planSource },
+        output: task.output,
+        command: task.display,
+        plan: { title: task.title, source: 'llm' },
       });
     } catch (e) {
-      results.push({ filePath, ok: false, kind: 'error', error: e.message });
+      results.push({ filePath: file.path, ok: false, kind: 'error', error: e.message });
     }
   }
+  if (out.warnings && out.warnings.length) note(out.warnings.join('；'));
 
   return { type: 'done', notes, results };
 }
@@ -221,25 +235,6 @@ function registerIpc() {
       if (history.length && history[history.length - 1].role === 'user') history.pop();
     }
     return agentPipeline(String(text || ''), filePaths || [], 'agent', history);
-  });
-
-  ipcMain.handle('agent:preview', async (_e, text, filePath) => {
-    const binRes = await ensureBinaries();
-    if (!binRes.ok) return { type: 'error', error: binRes.error };
-    const probe = await ffmpeg.probeMedia(binRes.ffprobe, filePath);
-    if (!probe.ok) return { type: 'error', error: '无法读取媒体信息: ' + probe.error };
-    const summary = ffmpeg.summarizeInfo(probe.info);
-    const { plan, source } = await planFromText(text, summary, settings.llm || null);
-    if (plan.type === 'operation') {
-      try {
-        const output = suggestOutputPath(filePath, plan.actions);
-        const built = buildCommand({ input: filePath, output, actions: plan.actions, media: summary });
-        return { type: 'operation', plan: { title: plan.title, actions: plan.actions, source }, output, command: built.display, info: summary };
-      } catch (e) {
-        return { type: 'error', error: e.message };
-      }
-    }
-    return { ...plan, info: summary };
   });
 
   ipcMain.handle('task:run-operation', async (_e, filePath, ops) => {

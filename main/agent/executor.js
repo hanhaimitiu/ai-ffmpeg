@@ -121,6 +121,95 @@ function atempoChain(factor) {
   return chains.join(',');
 }
 
+/** 音视频分流的音频容器后缀（按源音频编码推导，未知则 m4a） */
+function audioExtFor(codec) {
+  return { aac: 'm4a', mp3: 'mp3', opus: 'opus', vorbis: 'ogg', flac: 'flac', pcm_s16le: 'wav', ac3: 'ac3', eac3: 'eac3', truehd: 'mka', dts: 'dts' }[codec] || 'm4a';
+}
+
+/**
+ * 音视频分流（demux）输出路径：纯视频沿用源容器，纯音频按编码选容器。
+ * @returns {{videoOutput:string, audioOutput:string}}
+ */
+function suggestDemuxOutputs(inputPath, audioCodec) {
+  const dir = path.dirname(inputPath);
+  const base = baseName(inputPath);
+  return {
+    videoOutput: uniquePath(path.join(dir, `${base}_video.${extOf(inputPath) || 'mp4'}`)),
+    audioOutput: uniquePath(path.join(dir, `${base}_audio.${audioExtFor(audioCodec)}`)),
+  };
+}
+
+/**
+ * 音视频分流命令：纯视频 + 纯音频两个流拷贝命令（各成一个任务）。
+ * @returns {{video:{args:string[],display:string}, audio:{args:string[],display:string}}}
+ */
+function buildDemuxCommands({ input, videoOutput, audioOutput, audioTrack = 0 }) {
+  const fmtArgs = (arr) => `ffmpeg ${arr.map((a) => (/ /.test(a) ? `'${a}'` : a)).join(' ')}`;
+  const vArgs = ['-i', input, '-map', '0:v:0', '-c', 'copy', '-y', videoOutput];
+  const aArgs = ['-i', input, '-map', `0:a:${audioTrack}`, '-c', 'copy', '-y', audioOutput];
+  return {
+    video: { args: vArgs, display: fmtArgs(vArgs) },
+    audio: { args: aArgs, display: fmtArgs(aArgs) },
+  };
+}
+
+/**
+ * 合并多个文件为一个大文件（filter_complex concat）。
+ * 不同分辨率/帧率/采样率也能拼：每路输入先归一化再拼接，重新编码。
+ * @param {object} opts
+ * @param {string[]} opts.inputs 输入文件（≥2）
+ * @param {string} opts.output 输出文件
+ * @param {{hasAudio:boolean, width?:number}[]} opts.streams 每个输入是否有音频/宽度
+ * @param {number} [opts.crf] 压缩质量（可省略）
+ * @param {number} [opts.width] 统一宽度（可省略，默认取各输入中的最小宽度）
+ * @returns {{args:string[], display:string}}
+ */
+function buildConcatCommand({ inputs, output, streams, crf, width }) {
+  if (!inputs || inputs.length < 2) throw new Error('合并至少需要两个文件');
+  if (streams && streams.length !== inputs.length) throw new Error('流信息与输入数量不一致');
+  const widths = (streams || []).map((s) => s.width).filter((w) => w > 0);
+  const targetW = Math.round(width || (widths.length ? Math.min(...widths) : 1280));
+  const withAudio = (streams || []).every((s) => s.hasAudio);
+  const anyAudio = (streams || []).some((s) => s.hasAudio);
+  if (!withAudio && anyAudio) throw new Error('部分文件没有音轨，无法直接合并；请先统一为纯视频或含音频格式');
+
+  const parts = [];
+  const maps = [];
+  inputs.forEach((_p, i) => {
+    const vNorm = `scale=${targetW}:-2,setsar=1,fps=30`;
+    if (withAudio) {
+      parts.push(`[${i}:v]${vNorm}[v${i}]`, `[${i}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a${i}]`);
+    } else {
+      parts.push(`[${i}:v]${vNorm}[v${i}]`);
+    }
+  });
+  const n = inputs.length;
+  if (withAudio) {
+    // concat 滤镜的输入按段交错：[v0][a0][v1][a1]...
+    const cat = inputs.map((_p, i) => `[v${i}][a${i}]`).join('');
+    parts.push(`${cat}concat=n=${n}:v=1:a=1[vout][aout]`);
+    maps.push('-map', '[vout]', '-map', '[aout]');
+  } else {
+    const vCat = inputs.map((_p, i) => `[v${i}]`).join('');
+    parts.push(`${vCat}concat=n=${n}:v=1:a=0[vout]`);
+    maps.push('-map', '[vout]');
+  }
+
+  const args = [
+    ...inputs.flatMap((p) => ['-i', p]),
+    '-filter_complex', parts.join(';'),
+    ...maps,
+    '-c:v', 'libx264',
+    '-crf', String(crf != null ? Math.min(51, Math.max(0, Math.round(crf))) : 23),
+    '-preset', 'medium',
+  ];
+  if (withAudio) args.push('-c:a', 'aac', '-b:a', '160k');
+  args.push('-y', output);
+
+  const display = `ffmpeg ${args.map((a) => (/ /.test(a) ? `'${a}'` : a)).join(' ')}`;
+  return { args, display };
+}
+
 // ---------- 构建命令 ----------
 
 /**
@@ -151,10 +240,28 @@ function buildCommand({ input, output, actions, media, logoPath }) {
   let trimLen = null;
   let hasThumbnail = false;
   let imageWatermark = false;
+  let mapVideo = null; // 选定的视频轨（类型内序号）
+  let mapAudio = null; // 选定的音频轨（类型内序号）
 
   for (const a of actions) {
     if (!a || typeof a !== 'object' || !a.op) throw new Error('操作缺少 op 字段');
     switch (a.op) {
+      case 'selectAudioTrack': {
+        const t = Math.round(a.track);
+        if (!Number.isFinite(t) || t < 0) throw new Error('音轨序号需为非负整数（0 表示第一条）');
+        mapAudio = t;
+        break;
+      }
+      case 'selectVideoTrack': {
+        const t = Math.round(a.track);
+        if (!Number.isFinite(t) || t < 0) throw new Error('视频轨序号需为非负整数（0 表示第一条）');
+        mapVideo = t;
+        break;
+      }
+      case 'demux': {
+        // 由管线展开为「纯视频」「纯音频」两个任务，这里不应被单独构建
+        throw new Error('demux（音视频分流）需由管线展开执行');
+      }
       case 'trim': {
         if (a.start == null && a.end == null) throw new Error('trim 操作缺少 start/end 参数');
         if (a.start != null) trimStart = a.start;
@@ -194,6 +301,11 @@ function buildCommand({ input, output, actions, media, logoPath }) {
       case 'extractAudio': {
         audioOnly = true;
         outputFormat = a.targetFormat || 'mp3';
+        if (a.track != null) {
+          const t = Math.round(a.track);
+          if (!Number.isFinite(t) || t < 0) throw new Error('音轨序号需为非负整数（0 表示第一条）');
+          mapAudio = t;
+        }
         break;
       }
 
@@ -326,6 +438,19 @@ function buildCommand({ input, output, actions, media, logoPath }) {
   // -i 之后先放 -t（输出时长）
   if (trimLen != null) post.unshift('-t', String(trimLen));
 
+  // 流选择：一旦出现 -map，ffmpeg 不再用默认选流规则。
+  // 只指定一种轨道时，另一种用可选映射保留（不存在也不报错）。
+  if (mapVideo != null || mapAudio != null) {
+    if (mapVideo != null) post.push('-map', `0:v:${mapVideo}`);
+    else if (!audioOnly) post.push('-map', '0:v:0?');
+    if (mapAudio != null) post.push('-map', `0:a:${mapAudio}`);
+    else if (!audioOnly && mapVideo != null) post.push('-map', '0:a:0?');
+    // 纯选轨且无滤镜/编码需求 → 流拷贝，秒级完成（audioOnly 的编码策略由其分支决定）
+    if (!audioOnly && !forceVideoEncode && audioFilters.length === 0 && !post.includes('-c:v')) {
+      post.push('-c', 'copy');
+    }
+  }
+
   // 附加输入（图片水印）
   const inputs = [input, ...extraInputs];
 
@@ -377,4 +502,4 @@ function buildCommand({ input, output, actions, media, logoPath }) {
   };
 }
 
-module.exports = { buildCommand, suggestOutputPath };
+module.exports = { buildCommand, suggestOutputPath, uniquePath, buildDemuxCommands, suggestDemuxOutputs, buildConcatCommand };

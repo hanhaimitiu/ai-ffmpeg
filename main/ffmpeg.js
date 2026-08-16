@@ -142,18 +142,49 @@ function probeMedia(ffprobePath, filePath) {
   });
 }
 
-/** 从 ffprobe 结果提取友好信息 */
+/** 从 ffprobe 结果提取友好信息（含全部流列表，供流级操作与 LLM 决策） */
 function summarizeInfo(info) {
   if (!info) return null;
   const fmt = info.format || {};
-  const video = (info.streams || []).find((s) => s.codec_type === 'video');
-  const audio = (info.streams || []).find((s) => s.codec_type === 'audio');
-  const duration = parseFloat(fmt.duration) || parseFloat(video && video.duration) || 0;
+  const streams = info.streams || [];
+  const video = streams.find((s) => s.codec_type === 'video');
+  const audio = streams.find((s) => s.codec_type === 'audio');
+
+  // 类型内序号（ffmpeg -map 0:a:N 中的 N 即此序号，0 起）
+  let vIdx = -1;
+  let aIdx = -1;
+  const streamList = streams.map((s) => {
+    const type = s.codec_type;
+    if (type === 'video') vIdx += 1;
+    if (type === 'audio') aIdx += 1;
+    const item = {
+      index: s.index,             // 全局流序号
+      type,                       // video | audio | subtitle | data...
+      codec: s.codec_name,
+      language: (s.tags && (s.tags.language || s.tags.LANGUAGE)) || null,
+      title: (s.tags && (s.tags.title || s.tags.TITLE)) || null,
+      default: !!(s.disposition && s.disposition.default === 1),
+    };
+    if (type === 'video') {
+      item.videoIndex = vIdx;
+      item.width = s.width;
+      item.height = s.height;
+      item.fps = evalFps(s);
+    }
+    if (type === 'audio') {
+      item.audioIndex = aIdx;
+      item.channels = s.channels;
+      item.sampleRate = s.sample_rate;
+    }
+    return item;
+  });
+
   return {
-    duration,
+    duration: parseFloat(fmt.duration) || parseFloat(video && video.duration) || 0,
     size: parseInt(fmt.size || 0, 10),
     bitRate: parseInt(fmt.bit_rate || 0, 10),
     formatName: (fmt.format_name || '').split(',')[0],
+    streams: streamList,
     video: video
       ? {
           codec: video.codec_name,

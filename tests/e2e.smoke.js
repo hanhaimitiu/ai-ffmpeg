@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * 端到端冒烟测试：生成测试视频 → 探测 → 自然语言解析（mock LLM）→ 命令构建 → 真实 ffmpeg 执行。
+ * 端到端冒烟测试：生成测试视频（含双音轨）→ 探测 → LangGraph Agent（mock LLM）
+ * → 命令构建 → 真实 ffmpeg 执行（含音视频分流 / 选音轨 / 合并 / 多文件）。
  * 直接复用主进程模块（不依赖 Electron 窗口）。
  */
 
@@ -11,8 +12,7 @@ const http = require('http');
 const { execFileSync } = require('child_process');
 
 const ffmpeg = require('../main/ffmpeg');
-const { buildCommand, suggestOutputPath } = require('../main/agent/executor');
-const { planFromText } = require('../main/agent/agent');
+const { runAgentGraph } = require('../main/agent/graph');
 
 const WORK = path.join(__dirname, '.e2e');
 let pass = 0;
@@ -23,7 +23,7 @@ function ok(cond, desc, extra) {
   else { fail++; console.log(`  ✗ ${desc}${extra ? '\n    ' + extra : ''}`); }
 }
 
-/** mock OpenAI 兼容服务：按指令返回操作 */
+/** mock OpenAI 兼容服务：按指令返回计划 */
 function startMockLLM(port) {
   return new Promise((resolve) => {
     const s = http.createServer((req, res) => {
@@ -31,12 +31,19 @@ function startMockLLM(port) {
       req.on('data', (c) => (body += c));
       req.on('end', () => {
         let msg = '';
-        try { msg = JSON.parse(body).messages[1].content; } catch {}
+        try { const m = JSON.parse(body).messages; msg = m[m.length - 1].content; } catch {}
         let reply;
         if (/压缩/.test(msg)) reply = { type: 'operation', actions: [{ op: 'convert', targetFormat: 'mp4' }, { op: 'compress', crf: 28 }] };
         else if (/720p/.test(msg)) reply = { type: 'operation', actions: [{ op: 'trim', start: 1, end: 3 }, { op: 'resolution', width: 1280 }] };
         else if (/wav|音频/.test(msg)) reply = { type: 'operation', actions: [{ op: 'extractAudio', targetFormat: 'wav' }] };
         else if (/封面/.test(msg)) reply = { type: 'operation', actions: [{ op: 'thumbnail' }] };
+        else if (/分流/.test(msg)) reply = { type: 'operation', plans: [{ file: 'dual.mp4', actions: [{ op: 'demux', track: 1 }] }] };
+        else if (/音轨/.test(msg)) reply = { type: 'operation', actions: [{ op: 'selectAudioTrack', track: 1 }] };
+        else if (/合并/.test(msg)) reply = { type: 'operation', concat: { files: ['test.mp4', 'dual.mp4'] }, plans: [] };
+        else if (/各自/.test(msg)) reply = { type: 'operation', plans: [
+          { file: 'test.mp4', actions: [{ op: 'extractAudio', targetFormat: 'mp3' }] },
+          { file: 'dual.mp4', actions: [{ op: 'resolution', width: 640 }] },
+        ] };
         else reply = { type: 'unknown', message: '无法理解', suggestions: [] };
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Connection', 'close');
@@ -45,6 +52,12 @@ function startMockLLM(port) {
     });
     s.listen(port, () => resolve(s));
   });
+}
+
+async function runTask(binRes, task, desc) {
+  const r = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: task.args, duration: task.duration }).promise;
+  ok(r.ok, `${desc}（exit 0）`, r.error || '');
+  return r;
 }
 
 async function main() {
@@ -58,7 +71,7 @@ async function main() {
   if (!binRes.ok) process.exit(1);
   console.log(`  → ${binRes.ffmpeg}`);
 
-  // 2. 生成测试视频（5 秒，带音频）
+  // 2. 生成测试视频A（5 秒，1 音轨）
   const testVideo = path.join(WORK, 'test.mp4');
   execFileSync(binRes.ffmpeg, [
     '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=5',
@@ -66,63 +79,85 @@ async function main() {
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
     '-shortest', '-y', testVideo,
   ], { stdio: 'ignore' });
-  ok(fs.existsSync(testVideo), '生成测试视频');
+  ok(fs.existsSync(testVideo), '生成测试视频A');
 
-  // 3. ffprobe 探测
-  const probe = await ffmpeg.probeMedia(binRes.ffprobe, testVideo);
+  // 3. 生成测试视频B（4 秒，双音轨：440Hz + 880Hz）
+  const dualVideo = path.join(WORK, 'dual.mp4');
+  execFileSync(binRes.ffmpeg, [
+    '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=4',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:duration=4',
+    '-map', '0:v', '-map', '1:a', '-map', '2:a',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+    '-shortest', '-y', dualVideo,
+  ], { stdio: 'ignore' });
+  ok(fs.existsSync(dualVideo), '生成双音轨测试视频B');
+
+  // 4. ffprobe 探测：流列表完整
+  const probe = await ffmpeg.probeMedia(binRes.ffprobe, dualVideo);
   ok(probe.ok, 'ffprobe 读取媒体信息');
-  const summary = ffmpeg.summarizeInfo(probe.info);
-  ok(summary.duration > 4.5, `时长约 5s（实际 ${summary.duration.toFixed(2)}s）`);
+  const infoB = ffmpeg.summarizeInfo(probe.info);
+  ok(Array.isArray(infoB.streams) && infoB.streams.length === 3, '流列表含 3 条流（1视频+2音频）', JSON.stringify(infoB.streams && infoB.streams.map((s) => s.type)));
+  ok(infoB.streams.filter((s) => s.type === 'audio').every((s, i) => s.audioIndex === i), 'audioIndex 正确编号');
 
-  // 4. 多步骤：压缩（convert + compress）
-  const { plan } = await planFromText('把视频转成mp4并压缩', summary, cfg);
-  ok(plan.type === 'operation' && plan.actions.length === 2, '解析"转mp4并压缩"两步骤', JSON.stringify(plan));
+  const probeA = await ffmpeg.probeMedia(binRes.ffprobe, testVideo);
+  const infoA = ffmpeg.summarizeInfo(probeA.info);
+  const files = [
+    { path: testVideo, name: 'test.mp4', info: infoA },
+    { path: dualVideo, name: 'dual.mp4', info: infoB },
+  ];
 
-  // 5. 构建命令
-  const out1 = path.join(WORK, 'test_compressed.mp4');
-  const built1 = buildCommand({ input: testVideo, output: out1, actions: plan.actions, media: summary });
-  ok(built1.args.includes('-crf'), '压缩参数包含 crf', built1.display);
+  // 5. 多步骤：压缩（convert + compress）
+  const r1 = await runAgentGraph({ text: '把视频转成mp4并压缩', files, llmConfig: cfg });
+  ok(r1.kind === 'operation' && r1.tasks.length === 2, '解析"转mp4并压缩"（应用到两文件）', JSON.stringify(r1));
+  ok(r1.tasks[0].args.includes('-crf'), '压缩参数包含 crf', r1.tasks[0].display);
+  const res1 = await runTask(binRes, r1.tasks[0], '压缩执行');
+  ok(res1.ok && fs.existsSync(r1.tasks[0].output), '输出文件已生成');
 
-  // 6. 真实执行 + 进度
-  const progressEvents = [];
-  let exitCode = null;
-  const runner = ffmpeg.runFFmpeg({
-    bin: binRes.ffmpeg,
-    args: built1.args,
-    duration: summary.duration,
-    onProgress: (p) => progressEvents.push(p),
-    onExit: (c) => { exitCode = c; },
-  });
-  const res = await runner.promise;
-  ok(res.ok && exitCode === 0, `执行成功（exit ${exitCode}）`, res.error || '');
-  ok(fs.existsSync(out1), '输出文件已生成');
-  ok(progressEvents.length > 0 && progressEvents[progressEvents.length - 1].progress === 1, `进度上报到 100%（共 ${progressEvents.length} 次）`);
+  // 6. 分流（demux）：纯视频 + 指定第2条音轨的纯音频
+  const r2 = await runAgentGraph({ text: '音视频分流', files, llmConfig: cfg });
+  ok(r2.kind === 'operation' && r2.tasks.length === 2, '分流展开为两个任务', JSON.stringify(r2.tasks && r2.tasks.map((t) => t.title)));
+  ok(r2.tasks[1].args.includes('0:a:1'), '分流音频选第2条音轨', r2.tasks[1].display);
+  await runTask(binRes, r2.tasks[0], '分流-纯视频执行');
+  await runTask(binRes, r2.tasks[1], '分流-纯音频执行');
+  const pv = await ffmpeg.probeMedia(binRes.ffprobe, r2.tasks[0].output);
+  const pa = await ffmpeg.probeMedia(binRes.ffprobe, r2.tasks[1].output);
+  const sv = ffmpeg.summarizeInfo(pv.info);
+  const sa = ffmpeg.summarizeInfo(pa.info);
+  ok(sv.video.hasVideo && !sv.audio.hasAudio, '分流产物：纯视频文件无音轨', JSON.stringify({ v: sv.video.hasVideo, a: sv.audio.hasAudio }));
+  ok(!sa.video.hasVideo && sa.audio.hasAudio, '分流产物：纯音频文件无视频', JSON.stringify({ v: sa.video.hasVideo, a: sa.audio.hasAudio }));
 
-  // 7. 截取 + 720p 组合
-  const p2 = await planFromText('截取从1秒到3秒，转成720p', summary, cfg);
-  ok(p2.plan.actions.length === 2, '解析组合操作', JSON.stringify(p2.plan.actions));
-  const out2 = path.join(WORK, 'test_trim720.mp4');
-  const built2 = buildCommand({ input: testVideo, output: out2, actions: p2.plan.actions, media: summary });
-  const r2 = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: built2.args, duration: 2 }).promise;
-  ok(r2.ok, '组合操作执行成功');
-  const probe2 = await ffmpeg.probeMedia(binRes.ffprobe, out2);
-  const s2 = ffmpeg.summarizeInfo(probe2.info);
-  ok(Math.abs(s2.duration - 2) < 0.6, `时长约 2s（实际 ${s2.duration.toFixed(2)}s）`);
-  ok(s2.video.width === 1280, `分辨率 1280 宽（实际 ${s2.video.width}）`);
+  // 7. 选音轨：输出保留视频 + 第2条音轨
+  const r3 = await runAgentGraph({ text: '换成第二条音轨', files: [files[1]], llmConfig: cfg });
+  ok(r3.kind === 'operation' && r3.tasks[0].args.includes('0:a:1') && r3.tasks[0].args.includes('-c'), '选轨命令（map + copy）', r3.tasks[0] && r3.tasks[0].display);
+  await runTask(binRes, r3.tasks[0], '选音轨执行');
+  const p3 = await ffmpeg.probeMedia(binRes.ffprobe, r3.tasks[0].output);
+  const s3 = ffmpeg.summarizeInfo(p3.info);
+  ok(s3.video.hasVideo && s3.audio.hasAudio, '选轨产物：视频+单音轨', JSON.stringify(s3.streams && s3.streams.map((x) => x.type)));
 
-  // 8. 提取音频
-  const p3 = await planFromText('提取音频为wav', summary, cfg);
-  const out3 = suggestOutputPath(testVideo, p3.plan.actions);
-  const built3 = buildCommand({ input: testVideo, output: out3, actions: p3.plan.actions, media: summary });
-  const r3 = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: built3.args, duration: 5 }).promise;
-  ok(r3.ok && fs.existsSync(out3), '提取音频成功（' + path.basename(out3) + '）');
+  // 8. 合并两个视频
+  const r4 = await runAgentGraph({ text: '合并', files, llmConfig: cfg });
+  ok(r4.kind === 'operation' && r4.tasks.length === 1 && r4.tasks[0].args.includes('-filter_complex'), '合并生成 filter_complex', r4.tasks[0] && r4.tasks[0].display.slice(0, 120));
+  await runTask(binRes, r4.tasks[0], '合并执行');
+  const p4 = await ffmpeg.probeMedia(binRes.ffprobe, r4.tasks[0].output);
+  const s4 = ffmpeg.summarizeInfo(p4.info);
+  ok(Math.abs(s4.duration - (infoA.duration + infoB.duration)) < 1.2, `合并产物时长≈两段之和（实际 ${s4.duration.toFixed(2)}s，期望 ~${(infoA.duration + infoB.duration).toFixed(2)}s）`);
+  ok(s4.video.hasVideo && s4.audio.hasAudio, '合并产物含视频+音频');
 
-  // 9. 封面
-  const p4 = await planFromText('生成封面图', summary, cfg);
-  const out4 = suggestOutputPath(testVideo, p4.plan.actions);
-  const built4 = buildCommand({ input: testVideo, output: out4, actions: p4.plan.actions, media: summary });
-  const r4 = await ffmpeg.runFFmpeg({ bin: binRes.ffmpeg, args: built4.args }).promise;
-  ok(r4.ok && fs.existsSync(out4), '封面生成成功（' + path.basename(out4) + '）');
+  // 9. 多文件各自不同操作
+  const r5 = await runAgentGraph({ text: '各自操作', files, llmConfig: cfg });
+  ok(r5.kind === 'operation' && r5.tasks.length === 2
+    && r5.tasks[0].output.endsWith('.mp3') && r5.tasks[1].args.includes('scale=640:-2'), '多文件独立计划', JSON.stringify(r5.tasks && r5.tasks.map((t) => t.output)));
+  await runTask(binRes, r5.tasks[0], 'A 提取音频执行');
+  await runTask(binRes, r5.tasks[1], 'B 缩放执行');
+
+  // 10. 截取 + 720p 组合（回归）
+  const r6 = await runAgentGraph({ text: '截取从1秒到3秒，转成720p', files: [files[0]], llmConfig: cfg });
+  await runTask(binRes, r6.tasks[0], '组合操作执行');
+  const p6 = await ffmpeg.probeMedia(binRes.ffprobe, r6.tasks[0].output);
+  const s6 = ffmpeg.summarizeInfo(p6.info);
+  ok(Math.abs(s6.duration - 2) < 0.6, `时长约 2s（实际 ${s6.duration.toFixed(2)}s）`);
+  ok(s6.video.width === 1280, `分辨率 1280 宽（实际 ${s6.video.width}）`);
 
   server.closeAllConnections && server.closeAllConnections();
   server.close();

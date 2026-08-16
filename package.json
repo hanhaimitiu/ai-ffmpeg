@@ -66,5 +66,11 @@
         "repo": "ai-ffmpeg"
       }
     ]
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.8",
+    "@langchain/langgraph": "^1.4.10",
+    "@langchain/openai": "^1.5.8",
+    "zod": "^4.4.3"
   }
 }

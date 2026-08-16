@@ -1,18 +1,18 @@
 'use strict';
 
-const { callLLMJSON } = require('./llm');
-
 /**
- * Agent 编排层：用户自然语言 → 执行计划。
- * 仅通过大模型解析（OpenAI 兼容接口）。未配置或调用失败时明确报错，
- * 不做离线规则解析兜底。
+ * Agent 领域层：操作 Schema、action 校验、LLM 输出规范化、系统提示词。
+ * 仅纯函数；编排由 graph.js（LangGraph）完成。
  */
 
 /** 提供给 LLM 的操作 Schema（与 executor.js 中实现保持一致） */
 const OP_SCHEMA = [
   { op: 'convert', params: { targetFormat: 'mp4|mov|avi|mkv|webm|mp3|wav|flac|aac|gif...' }, desc: '转封装/转格式' },
-  { op: 'trim', params: { start: '起始秒(可省略，省略表示从0开始)', end: '结束秒(可省略，省略表示到结尾)', fromEnd: 'true 表示保留末尾end秒(可选)', removeFromEnd: 'true 表示删除末尾end秒(可选)' }, desc: '裁剪片段' },
-  { op: 'extractAudio', params: { targetFormat: 'mp3|wav|flac|aac|m4a|ogg' }, desc: '提取音频（输出只有音频，会忽略视频类操作）' },
+  { op: 'trim', params: { start: '起始秒(可省略)', end: '结束秒(可省略)', fromEnd: 'true 表示保留末尾end秒(可选)', removeFromEnd: 'true 表示删除末尾end秒(可选)' }, desc: '裁剪片段' },
+  { op: 'extractAudio', params: { targetFormat: 'mp3|wav|flac|aac|m4a|ogg', track: '提取第几条音轨（可省略，默认0，见流列表audioIndex）' }, desc: '提取音频（可指定音轨）' },
+  { op: 'selectAudioTrack', params: { track: '选用第几条音轨（从0开始，对应流列表中的 audioIndex）' }, desc: '选择音轨（输出保留该音轨+视频）' },
+  { op: 'selectVideoTrack', params: { track: '选用第几条视频轨（从0开始，对应流列表中的 videoIndex）' }, desc: '选择视频轨' },
+  { op: 'demux', params: {}, desc: '音视频分流：拆成纯视频+纯音频两个文件。必须单独使用，不能与其他操作组合' },
   { op: 'mute', params: {}, desc: '移除/静音音频轨' },
   { op: 'resolution', params: { width: '目标宽度像素，如1920' }, desc: '调整分辨率(按宽度等比缩放)' },
   { op: 'bitrate', params: { kbps: '目标视频码率kbps' }, desc: '调整视频码率' },
@@ -31,34 +31,65 @@ const OP_SCHEMA = [
 
 const OP_NAMES = OP_SCHEMA.map((x) => x.op);
 
-const INSPECT_DESC = '用户想了解媒体信息/时长/分辨率/大小等 → 返回 {"type":"inspect"}';
+const INSPECT_DESC = '用户想了解媒体信息/时长/分辨率/大小/有哪些音轨等 → 返回 {"type":"inspect"}';
 const UNKNOWN_DESC = '用户要求做的事不在以上能力范围内 → 返回 {"type":"unknown","message":"简短说明原因","suggestions":["示例指令1","示例指令2"]}';
 
-function buildSystemPrompt(infoSummary) {
+/** 单文件流列表的可读摘要（给 LLM 看） */
+function describeStreams(info) {
+  if (!info || !Array.isArray(info.streams) || !info.streams.length) return '（无流信息）';
+  return info.streams
+    .map((s) => {
+      if (s.type === 'video') {
+        return `- #${s.index} 视频 ${s.codec} ${s.width}x${s.height}${s.fps ? ` ${s.fps}fps` : ''}（videoIndex=${s.videoIndex}）${s.language ? ` 语言:${s.language}` : ''}`;
+      }
+      if (s.type === 'audio') {
+        return `- #${s.index} 音频 ${s.codec}${s.channels ? ` ${s.channels}声道` : ''}（audioIndex=${s.audioIndex}）${s.language ? ` 语言:${s.language}` : ''}${s.title ? ` 标题:${s.title}` : ''}`;
+      }
+      return `- #${s.index} ${s.type} ${s.codec || ''}${s.language ? ` 语言:${s.language}` : ''}`;
+    })
+    .join('\n');
+}
+
+/**
+ * 构建系统提示词（多文件 + 流感知）。
+ * @param {Array<{name:string, info:object}>} files
+ */
+function buildSystemPrompt(files) {
+  const fileList = (files || [])
+    .map((f, i) => {
+      const d = f.info ? `${Math.round((f.info.duration || 0))}s ${f.info.formatName || ''}` : '未探测';
+      return `[${i}] ${f.name}：${d}\n${describeStreams(f.info)}`;
+    })
+    .join('\n\n');
+
   return [
-    '你是嵌入在本地 ffmpeg 工具中的智能助手，负责把用户的自然语言指令解析成可执行的 ffmpeg 操作列表。',
+    '你是嵌入在本地 ffmpeg 工具中的智能助手，负责把用户的自然语言指令解析成可执行的 ffmpeg 操作计划。',
     '',
-    `当前媒体文件信息（JSON）：\n${JSON.stringify(infoSummary || null, null, 2)}`,
+    `当前会话中的媒体文件（含完整流列表，音轨/视频轨序号以 audioIndex/videoIndex 为准）：\n${fileList}`,
     '',
-    '可用操作（一次可组合多个，按顺序执行）：',
-    OP_SCHEMA.map((x) => `- ${JSON.stringify(x)}`).join('\n'),
+    '可用操作（actions 中每个元素一个步骤，按顺序执行，可组合）：',
+    OP_SCHEMA.map((x) => `- ${JSON.stringify({ op: x.op, ...x.params })} ${x.desc}`).join('\n'),
     '',
     '输出规则（必须严格遵守）：',
     '1. 只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记。',
-    `2. 普通操作返回 {"type":"operation","actions":[{"op":"...", ...参数}]}`,
-    `3. ${INSPECT_DESC}`,
-    `4. ${UNKNOWN_DESC}`,
-    '5. 参数必须是数字/字符串/布尔等合法 JSON 值，不能写表达式或占位符。',
-    '6. 如果用户没指定格式细节（如输出格式），选择最合理的默认值。',
-    '7. **用户一句话可能包含多个步骤，必须把每个步骤都解析为一个 action，全部放进 actions 数组，一个都不能少。**',
-    '8. trim 必须给出 start 或 end（数字秒）。',
-    '9. 这是多轮对话：对话历史里可能有之前的指令和执行结果，用户可能说「再压缩一点」「上一步改成1080p」这类指代之前内容的话，要结合历史理解其完整意图。但本次输出必须是**完整的操作列表**（从头描述这次要做什么，不是增量补丁）。',
+    '2. **不同文件做不同操作**：用 plans 数组，每个文件一项，file 填文件名或 [序号]：{"type":"operation","plans":[{"file":"a.mp4","actions":[...]},{"file":"b.mp4","actions":[...]}]}',
+    '3. 所有文件做相同操作：直接 {"type":"operation","actions":[...]}（应用到全部文件）。',
+    '4. **合并多个文件**：{"type":"operation","concat":{"files":["a.mp4","b.mp4"],"crf":28,"width":1280},"plans":[]}（crf/width 可省略；files 必须是上面列表中的文件）。',
+    `5. ${INSPECT_DESC}`,
+    `6. ${UNKNOWN_DESC}`,
+    '7. 参数必须是数字/字符串/布尔等合法 JSON 值。',
+    '8. **用户一句话可能包含多个步骤，每个步骤一个 action，一个都不能少。**',
+    '9. trim 必须给出 start 或 end（数字秒）。',
+    '10. 用户提到「第N条音轨」「国语/英语音轨」「主音轨」等时，参照流列表选 track：提取用 extractAudio 的 track 参数，换轨保留视频用 selectAudioTrack。',
+    '11. demux（音视频分流）必须单独一个 action，不能和其他操作组合。',
+    '12. 这是多轮对话：结合历史理解「再压缩一点」等指代，但本次输出必须是完整计划（不是增量）。',
     '',
     '示例：',
-    '用户："把视频转成mp4并压缩" → {"type":"operation","actions":[{"op":"convert","targetFormat":"mp4"},{"op":"compress","crf":28}]}',
-    '用户："截取前30秒，转720p，提取音频为wav" → {"type":"operation","actions":[{"op":"trim","start":0,"end":30},{"op":"resolution","width":1280},{"op":"extractAudio","targetFormat":"wav"}]}',
-    '用户："从10秒到30秒，加速2倍，加水印" → {"type":"operation","actions":[{"op":"trim","start":10,"end":30},{"op":"speed","speed":2},{"op":"watermark","text":"我的视频","position":"bottom-right"}]}',
-    '用户："这个视频多长？" → {"type":"inspect"}',
+    '用户："把国语配音提取出来" → {"type":"operation","actions":[{"op":"extractAudio","targetFormat":"m4a","track":0}]}',
+    '用户："换成英语音轨，转成720p" → {"type":"operation","actions":[{"op":"selectAudioTrack","track":1},{"op":"resolution","width":1280}]}',
+    '用户："把video.mp4音视频分流，clip.mp4转720p" → {"type":"operation","plans":[{"file":"video.mp4","actions":[{"op":"demux"}]},{"file":"clip.mp4","actions":[{"op":"resolution","width":1280}]}]}',
+    '用户："前两个视频合并成一个" → {"type":"operation","concat":{"files":["a.mp4","b.mp4"]},"plans":[]}',
+    '用户："这个视频有哪些音轨？" → {"type":"inspect"}',
   ].join('\n');
 }
 
@@ -68,12 +99,13 @@ function validateAction(a) {
   const op = a.op;
   if (!OP_NAMES.includes(op)) return null;
   const clean = { op };
-  const numParams = ['start', 'end', 'width', 'kbps', 'fps', 'speed', 'degrees', 'factor', 'crf', 'at'];
+  const numParams = ['start', 'end', 'width', 'kbps', 'fps', 'speed', 'degrees', 'factor', 'crf', 'at', 'track'];
   const strParams = ['targetFormat', 'text', 'position', 'direction'];
   for (const k of numParams) {
     if (a[k] !== undefined && a[k] !== null && isFinite(Number(a[k]))) {
       clean[k] = Number(a[k]);
       if (k === 'degrees') clean[k] = ((clean[k] % 360) + 360) % 360;
+      if (k === 'track' && (!Number.isInteger(clean[k]) || clean[k] < 0)) return null;
     }
   }
   for (const k of strParams) {
@@ -82,7 +114,6 @@ function validateAction(a) {
   for (const k of ['fromEnd', 'removeFromEnd', 'image']) {
     if (a[k] !== undefined) clean[k] = Boolean(a[k]);
   }
-  // 缺关键参数的 op 视为非法
   const required = {
     convert: ['targetFormat'],
     extractAudio: ['targetFormat'],
@@ -94,7 +125,8 @@ function validateAction(a) {
     volume: ['factor'],
     compress: ['crf'],
     mirror: ['direction'],
-    trim: [] // trim 至少要有 start 或 end 之一
+    selectAudioTrack: ['track'],
+    selectVideoTrack: ['track'],
   };
   if (op === 'trim' && clean.start === undefined && clean.end === undefined) return null;
   if (required[op] && required[op].some((k) => clean[k] === undefined)) return null;
@@ -104,86 +136,82 @@ function validateAction(a) {
 /** 操作列表是否"有实际内容"（避免空操作命令） */
 function hasEffectiveActions(actions) {
   return actions.some((a) => {
-    if (a.op === 'mute' || a.op === 'reverse' || a.op === 'gif' || a.op === 'denoise' || a.op === 'thumbnail') return true;
+    if (['mute', 'reverse', 'gif', 'denoise', 'thumbnail', 'demux'].includes(a.op)) return true;
     return Object.keys(a).length > 1; // 除 op 外还有参数
   });
 }
 
-/**
- * 把自然语言解析为执行计划。
- * @param {string} text 用户指令
- * @param {object|null} mediaInfo 媒体信息摘要（传给 LLM 用）
- * @param {object|null} llmConfig { baseURL, apiKey, model }，null 表示未配置
- * @param {(msg:string)=>void} [onNote] 日志回调
- * @param {{role:'user'|'assistant', content:string}[]} [history] 多轮对话上下文
- * @returns {Promise<{plan:object, source:'llm'|'error', error?:string}>}
- */
-async function planFromText(text, mediaInfo, llmConfig, onNote, history) {
-  const note = onNote || (() => {});
-  const chatHistory = Array.isArray(history) ? history.slice(-6) : [];
+/** 文件引用匹配：支持 [序号]、序号、完整文件名、去扩展名、包含匹配 */
+function matchFile(ref, files) {
+  if (ref == null) return -1;
+  let s = String(ref).trim();
+  // "[1]" / "1" 都按序号处理
+  const br = s.match(/^\[(\d+)\]$/);
+  if (br) s = br[1];
+  if (/^\d+$/.test(s)) {
+    const i = parseInt(s, 10);
+    if (i >= 0 && i < files.length) return i;
+  }
+  const lower = s.toLowerCase();
+  let idx = files.findIndex((f) => f.name.toLowerCase() === lower);
+  if (idx >= 0) return idx;
+  idx = files.findIndex((f) => f.name.toLowerCase().replace(/\.[^.]+$/, '') === lower.replace(/\.[^.]+$/, ''));
+  if (idx >= 0) return idx;
+  return files.findIndex((f) => f.name.toLowerCase().includes(lower) && lower.length >= 2);
+}
 
-  if (!llmConfig || !llmConfig.baseURL || !llmConfig.model) {
-    return {
-      plan: {
-        type: 'unknown',
-        message: '未配置大模型，无法理解指令。请在「设置」中配置 OpenAI 兼容接口（支持本地 llama.cpp / Ollama 等）。',
-        suggestions: ['打开右上角「设置」→ 服务预设 → llama.cpp(本地) → 读取模型 → 保存'],
-      },
-      source: 'error',
+/**
+ * 规范化 LLM 的 operation 输出：plans/flat-actions/concat 三种形态 → 统一结构。
+ * @returns {{ok:true, filePlans:Array<{fileIndex:number,actions:object[]}>, concat?:object, warnings:string[]}
+ *          |{ok:false, error:string}}
+ */
+function normalizeOperation(json, files) {
+  const warnings = [];
+
+  // concat 部分
+  let concat = null;
+  if (json.concat && Array.isArray(json.concat.files)) {
+    const idxs = json.concat.files.map((f) => matchFile(f, files));
+    const bad = idxs.filter((i) => i < 0).length;
+    if (bad) return { ok: false, error: `concat 中有 ${bad} 个文件无法识别，请使用文件名或 [序号] 引用当前文件列表` };
+    const uniq = [...new Set(idxs)];
+    if (uniq.length < 2) return { ok: false, error: '合并（concat）至少需要引用两个不同的文件' };
+    concat = {
+      fileIndexes: idxs,
+      crf: isFinite(Number(json.concat.crf)) ? Number(json.concat.crf) : undefined,
+      width: isFinite(Number(json.concat.width)) ? Number(json.concat.width) : undefined,
     };
   }
 
-  const system = buildSystemPrompt(mediaInfo);
-
-  // 最多尝试 2 次：首次结果若无效（空操作/结构异常），带提示重试一次
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const userText = attempt === 2
-        ? `${text}\n\n（注意：上一次解析结果无效或不完整。用户指令里的每一个步骤都必须对应一个 action，必须为 trim 提供 start 或 end，再次输出完整 JSON。）`
-        : text;
-      const json = await callLLMJSON({ config: llmConfig, system, user: userText, history: chatHistory });
-      if (!json) throw new Error('LLM 未返回合法 JSON');
-
-      if (json.type === 'inspect') {
-        return { plan: { type: 'inspect', title: '查看媒体信息' }, source: 'llm' };
+  // plans / flat actions
+  let filePlans = [];
+  if (Array.isArray(json.plans) && json.plans.length) {
+    for (const p of json.plans) {
+      const idx = matchFile(p.file, files);
+      if (idx < 0) return { ok: false, error: `计划中的文件「${p.file}」无法识别，请引用当前文件列表中的文件名或 [序号]` };
+      const actions = Array.isArray(p.actions) ? p.actions.map(validateAction).filter(Boolean) : [];
+      if (!actions.length) return { ok: false, error: `文件「${files[idx].name}」的操作无效（缺少必要参数）` };
+      if (actions.some((a) => a.op === 'demux') && actions.length > 1) {
+        return { ok: false, error: 'demux（音视频分流）不能与其他操作组合，请单独成一条' };
       }
-      if (json.type === 'unknown') {
-        return {
-          plan: { type: 'unknown', message: json.message || '该操作不在支持范围内', suggestions: json.suggestions || [] },
-          source: 'llm',
-        };
-      }
-      if (json.type === 'operation' && Array.isArray(json.actions)) {
-        const actions = json.actions.map(validateAction).filter(Boolean);
-        if (actions.length === 0) {
-          note(`第 ${attempt} 次解析结果无可执行操作，${attempt === 1 ? '重试' : '放弃'}`);
-          if (attempt === 1) continue;
-          return { plan: { type: 'error', message: '大模型未返回可执行的操作，请换个说法重试。' }, source: 'error' };
-        }
-        if (!hasEffectiveActions(actions)) {
-          note(`第 ${attempt} 次解析出空操作，${attempt === 1 ? '重试' : '放弃'}`);
-          if (attempt === 1) continue;
-          return { plan: { type: 'error', message: '大模型返回的操作缺少必要参数，请换个说法重试。' }, source: 'error' };
-        }
-        return {
-          plan: { type: 'operation', actions, title: actions.map((a) => a.op).join(' + ') },
-          source: 'llm',
-        };
-      }
-      note(`第 ${attempt} 次返回结构无法识别，${attempt === 1 ? '重试' : '放弃'}`);
-      if (attempt === 1) continue;
-      return { plan: { type: 'error', message: '大模型返回结构无法识别，请重试。' }, source: 'error' };
-    } catch (e) {
-      note(`第 ${attempt} 次 LLM 调用失败（${e.message}），${attempt === 1 ? '重试' : '放弃'}`);
-      if (attempt === 1) continue;
-      return {
-        plan: { type: 'error', message: `大模型调用失败：${e.message}` },
-        source: 'error',
-      };
+      if (!hasEffectiveActions(actions)) return { ok: false, error: '操作缺少必要参数' };
+      filePlans.push({ fileIndex: idx, actions });
     }
+  } else if (Array.isArray(json.actions) && json.actions.length) {
+    const actions = json.actions.map(validateAction).filter(Boolean);
+    if (!actions.length) return { ok: false, error: '解析出的操作无法执行（缺少必要参数或操作名不识别）' };
+    if (actions.some((a) => a.op === 'demux') && actions.length > 1) {
+      return { ok: false, error: 'demux（音视频分流）不能与其他操作组合，请单独成一条' };
+    }
+    if (!hasEffectiveActions(actions)) return { ok: false, error: '操作缺少必要参数' };
+    // flat：应用到全部文件
+    filePlans = files.map((_f, i) => ({ fileIndex: i, actions: [...actions] }));
+    if (files.length > 1) warnings.push('操作将应用到全部文件');
+  } else if (!concat) {
+    return { ok: false, error: '返回的计划为空（没有 actions 也没有 plans/concat）' };
   }
-  // 不可达
-  return { plan: { type: 'error', message: '解析失败' }, source: 'error' };
+
+  return { ok: true, filePlans, concat: concat || null, warnings };
 }
 
-module.exports = { planFromText, buildSystemPrompt, validateAction, OP_SCHEMA };
+module.exports = { OP_SCHEMA, OP_NAMES, buildSystemPrompt, validateAction, hasEffectiveActions, normalizeOperation, matchFile };

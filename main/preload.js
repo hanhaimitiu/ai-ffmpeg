@@ -9,7 +9,6 @@ contextBridge.exposeInMainWorld('api', {
 
   // agent
   runAgent: (text, filePaths, sessionId) => ipcRenderer.invoke('agent:run', text, filePaths, sessionId),
-  previewAgent: (text, filePath) => ipcRenderer.invoke('agent:preview', text, filePath),
 
   // tasks
   runOperation: (filePath, ops) => ipcRenderer.invoke('task:run-operation', filePath, ops),
